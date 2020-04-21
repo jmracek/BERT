@@ -1,0 +1,117 @@
+.version 6.4
+.target sm_70, sm_75
+.address_size 64
+
+#define WAIT_ALL_THREADS 0xffffffff
+
+/* mmultShmemTiles
+*
+* This function is a PTX wrapper around the 4 mma.sync instructions required to compute a 32x32 block of A * B.  
+*
+* ARGS:
+*   ptr_a:  Pointer to the 128-bits of shared memory containing the 8 fp16 elements of the A matrix
+*           needed by the current thread in performing the 4 mma.sync operations.
+*   ptr_b:  Pointer to the 128-bits of shared memory containing the 8 fp16 elements of the B matrix
+*           needed by the current thread in performing the 4 mma.sync operations
+*   acc:    This is an array in local memory containing the 8 elements of the accumulator, for each
+*           of the 4 mma.sync operations.
+*/
+// Probably need to set alignment by .ptr.global.align 32
+.visible .func mmultShmemTiles( 
+    .reg .u64 ptr_a, 
+    .reg .u64 ptr_b, 
+    .reg .u64 qp0_acc_03,
+    .reg .u64 qp0_acc_47,
+    .reg .u64 qp1_acc_03,
+    .reg .u64 qp1_acc_47,
+    .reg .u64 qp2_acc_03,
+    .reg .u64 qp2_acc_47,
+    .reg .u64 qp3_acc_03,
+    .reg .u64 qp3_acc_47
+) {
+
+    // Declare all the registers we need for this computation
+    .reg .f16x2     %Ra<4>, %Rb<4>;
+    .reg .f32       %Rc<8>, %Rd<8>, %Re<8>, %Rf<8>;
+    
+    // Load A and B matrices from SHMEM into registers
+    ld.shared.v4.b32 {%Ra0, %Ra1, %Ra2, %Ra3}, [ptr_a];
+    bar.warp.sync WAIT_ALL_THREADS;
+    ld.shared.v4.b32 {%Rb0, %Rb1, %Rb2, %Rb3}, [ptr_b];
+    bar.warp.sync WAIT_ALL_THREADS;
+
+    // Load all accumulators into registers
+    mov.v4.f32 {%Rc0, %Rc1, %Rc2, %Rc3}, acc[0][0];
+    mov.v4.f32 {%Rc4, %Rc5, %Rc6, %Rc7}, acc[0][4];
+    mov.v4.f32 {%Rd0, %Rd1, %Rd2, %Rd3}, acc[1][0];
+    mov.v4.f32 {%Rd4, %Rd5, %Rd6, %Rd7}, acc[1][4];
+    mov.v4.f32 {%Re0, %Re1, %Re2, %Re3}, acc[2][0];
+    mov.v4.f32 {%Re4, %Re5, %Re6, %Re7}, acc[2][4];
+    mov.v4.f32 {%Rf0, %Rf1, %Rf2, %Rf3}, acc[3][0];
+    mov.v4.f32 {%Rf4, %Rf5, %Rf6, %Rf7}, acc[3][4];
+    
+    // Perform the four mma.sync operations for the first half of the shmem tile
+    // * -
+    // - -
+    mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 
+        {%Rc0, %Rc1, %Rc2, %Rc3, %Rc4, %Rc5, %Rc6, %Rc7},
+        {%Ra0, %Ra1},
+        {%Rb0, %Rb1},
+        {%Rc0, %Rc1, %Rc2, %Rc3, %Rc4, %Rc5, %Rc6, %Rc7};
+
+    // - *
+    // - -
+    mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 
+        {%Rd0, %Rd1, %Rd2, %Rd3, %Rd4, %Rd5, %Rd6, %Rd7},
+        {%Ra0, %Ra1},
+        {%Rb2, %Rb3},
+        {%Rd0, %Rd1, %Rd2, %Rd3, %Rd4, %Rd5, %Rd6, %Rd7};
+    
+    // - -
+    // * -
+    mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 
+        {%Re0, %Re1, %Re2, %Re3, %Re4, %Re5, %Re6, %Re7},
+        {%Ra2, %Ra3},
+        {%Rb0, %Rb1},
+        {%Re0, %Re1, %Re2, %Re3, %Re4, %Re5, %Re6, %Re7};
+    
+    // - -
+    // - *
+    mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 
+        {%Rf0, %Rf1, %Rf2, %Rf3, %Rf4, %Rf5, %Rf6, %Rf7},
+        {%Ra2, %Ra3},
+        {%Rb2, %Rb3},
+        {%Rf0, %Rf1, %Rf2, %Rf3, %Rf4, %Rf5, %Rf6, %Rf7};
+
+    // Now store the results back to local address space so that the kernel 
+    // calling this device function can proceed to the next tile with out
+    // accumulated results
+    st.local.v4.f32 out[0][0], {%Rc0, %Rc1, %Rc2, %Rc3};
+    st.local.v4.f32 out[0][4], {%Rc4, %Rc5, %Rc6, %Rc7};
+    // TODO: Figure out if this is correct, and then complete this by accumulating
+    // the remaining outputs {d, e, f}
+
+    ret;
+}
+
+
+/*
+What are some obvious milestones?
+
+1. Compile and link PTX device code for use in CUDA C kernel
+3. Define swizzled loader for glmem -> shmem
+4. Define loader for shmem -> registers
+
+What are some obvious abstractions?
+
+1. Loading and storing to various mem spaces
+2. Performing the actual mma
+
+This little comment is just to keep some notes of things I need when I want to turn the above into a device function:
+.visible .func (.reg .u64 out_ptr) funcName(.shared .u64 a_ptr, .shared .u64 b_ptr, .reg .u64 c_ptr) {
+    .reg .f32 c;
+    mov.f32 c, [c_ptr];
+}
+
+the .visible part is for external linkage
+*/
