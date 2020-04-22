@@ -1,5 +1,5 @@
 .version 6.4
-.target sm_70, sm_75
+.target sm_70
 .address_size 64
 
 #define WAIT_ALL_THREADS 0xffffffff
@@ -18,37 +18,51 @@
 */
 // Probably need to set alignment by .ptr.global.align 32
 .visible .func mmultShmemTiles( 
-    .reg .u64 ptr_a, 
-    .reg .u64 ptr_b, 
-    .reg .u64 qp0_acc_03,
-    .reg .u64 qp0_acc_47,
-    .reg .u64 qp1_acc_03,
-    .reg .u64 qp1_acc_47,
-    .reg .u64 qp2_acc_03,
-    .reg .u64 qp2_acc_47,
-    .reg .u64 qp3_acc_03,
-    .reg .u64 qp3_acc_47
+    .param .u64 ptr_a, 
+    .param .u64 ptr_b, 
+    .param .u64 qp0_acc_03,
+    .param .u64 qp0_acc_47,
+    .param .u64 qp1_acc_03,
+    .param .u64 qp1_acc_47,
+    .param .u64 qp2_acc_03,
+    .param .u64 qp2_acc_47,
+    .param .u64 qp3_acc_03,
+    .param .u64 qp3_acc_47
 ) {
+    // Load the A, B pointers into registers
+    .reg .u64 rptr_a, rptr_b;
+    ld.param.u64 rptr_a, [ptr_a];
+    ld.param.u64 rptr_b, [ptr_b];
 
     // Declare all the registers we need for this computation
     .reg .f16x2     %Ra<4>, %Rb<4>;
     .reg .f32       %Rc<8>, %Rd<8>, %Re<8>, %Rf<8>;
     
     // Load A and B matrices from SHMEM into registers
-    ld.shared.v4.b32 {%Ra0, %Ra1, %Ra2, %Ra3}, [ptr_a];
+    ld.shared.v4.b32 {%Ra0, %Ra1, %Ra2, %Ra3}, [rptr_a];
     bar.warp.sync WAIT_ALL_THREADS;
-    ld.shared.v4.b32 {%Rb0, %Rb1, %Rb2, %Rb3}, [ptr_b];
+    ld.shared.v4.b32 {%Rb0, %Rb1, %Rb2, %Rb3}, [rptr_b];
     bar.warp.sync WAIT_ALL_THREADS;
+    
+    .reg .u64 %qptr<8>;
+    ld.param.u64 %qptr0, [qp0_acc_03];
+    ld.param.u64 %qptr1, [qp0_acc_47];
+    ld.param.u64 %qptr2, [qp1_acc_03];
+    ld.param.u64 %qptr3, [qp1_acc_47];
+    ld.param.u64 %qptr4, [qp2_acc_03];
+    ld.param.u64 %qptr5, [qp2_acc_47];
+    ld.param.u64 %qptr6, [qp3_acc_03];
+    ld.param.u64 %qptr7, [qp3_acc_47];
 
     // Load all accumulators into registers
-    mov.v4.f32 {%Rc0, %Rc1, %Rc2, %Rc3}, acc[0][0];
-    mov.v4.f32 {%Rc4, %Rc5, %Rc6, %Rc7}, acc[0][4];
-    mov.v4.f32 {%Rd0, %Rd1, %Rd2, %Rd3}, acc[1][0];
-    mov.v4.f32 {%Rd4, %Rd5, %Rd6, %Rd7}, acc[1][4];
-    mov.v4.f32 {%Re0, %Re1, %Re2, %Re3}, acc[2][0];
-    mov.v4.f32 {%Re4, %Re5, %Re6, %Re7}, acc[2][4];
-    mov.v4.f32 {%Rf0, %Rf1, %Rf2, %Rf3}, acc[3][0];
-    mov.v4.f32 {%Rf4, %Rf5, %Rf6, %Rf7}, acc[3][4];
+    ld.v4.f32 {%Rc0, %Rc1, %Rc2, %Rc3}, [%qptr0];
+    ld.v4.f32 {%Rc4, %Rc5, %Rc6, %Rc7}, [%qptr1]; 
+    ld.v4.f32 {%Rd0, %Rd1, %Rd2, %Rd3}, [%qptr2];
+    ld.v4.f32 {%Rd4, %Rd5, %Rd6, %Rd7}, [%qptr3];
+    ld.v4.f32 {%Re0, %Re1, %Re2, %Re3}, [%qptr4];
+    ld.v4.f32 {%Re4, %Re5, %Re6, %Re7}, [%qptr5];
+    ld.v4.f32 {%Rf0, %Rf1, %Rf2, %Rf3}, [%qptr6];
+    ld.v4.f32 {%Rf4, %Rf5, %Rf6, %Rf7}, [%qptr7];
     
     // Perform the four mma.sync operations for the first half of the shmem tile
     // * -
@@ -83,35 +97,15 @@
         {%Rb2, %Rb3},
         {%Rf0, %Rf1, %Rf2, %Rf3, %Rf4, %Rf5, %Rf6, %Rf7};
 
-    // Now store the results back to local address space so that the kernel 
-    // calling this device function can proceed to the next tile with out
-    // accumulated results
-    st.local.v4.f32 out[0][0], {%Rc0, %Rc1, %Rc2, %Rc3};
-    st.local.v4.f32 out[0][4], {%Rc4, %Rc5, %Rc6, %Rc7};
-    // TODO: Figure out if this is correct, and then complete this by accumulating
-    // the remaining outputs {d, e, f}
+    // Now update each of the accumulators 
+    st.v4.f32 [%qptr0], {%Rc0, %Rc1, %Rc2, %Rc3};
+    st.v4.f32 [%qptr1], {%Rc4, %Rc5, %Rc6, %Rc7};
+    st.v4.f32 [%qptr2], {%Rd0, %Rd1, %Rd2, %Rd3};
+    st.v4.f32 [%qptr3], {%Rd4, %Rd5, %Rd6, %Rd7};
+    st.v4.f32 [%qptr4], {%Re0, %Re1, %Re2, %Re3};
+    st.v4.f32 [%qptr5], {%Re4, %Re5, %Re6, %Re7};
+    st.v4.f32 [%qptr6], {%Rf0, %Rf1, %Rf2, %Rf3};
+    st.v4.f32 [%qptr7], {%Rf4, %Rf5, %Rf6, %Rf7};
 
     ret;
 }
-
-
-/*
-What are some obvious milestones?
-
-1. Compile and link PTX device code for use in CUDA C kernel
-3. Define swizzled loader for glmem -> shmem
-4. Define loader for shmem -> registers
-
-What are some obvious abstractions?
-
-1. Loading and storing to various mem spaces
-2. Performing the actual mma
-
-This little comment is just to keep some notes of things I need when I want to turn the above into a device function:
-.visible .func (.reg .u64 out_ptr) funcName(.shared .u64 a_ptr, .shared .u64 b_ptr, .reg .u64 c_ptr) {
-    .reg .f32 c;
-    mov.f32 c, [c_ptr];
-}
-
-the .visible part is for external linkage
-*/
