@@ -20,14 +20,14 @@
 .visible .func mmultShmemTiles( 
     .param .u64 ptr_a, 
     .param .u64 ptr_b, 
-    .param .u64 qp0_acc_03,
-    .param .u64 qp0_acc_47,
-    .param .u64 qp1_acc_03,
-    .param .u64 qp1_acc_47,
-    .param .u64 qp2_acc_03,
-    .param .u64 qp2_acc_47,
-    .param .u64 qp3_acc_03,
-    .param .u64 qp3_acc_47
+    .param .u64 mma0_acc_03,
+    .param .u64 mma0_acc_47,
+    .param .u64 mma1_acc_03,
+    .param .u64 mma1_acc_47,
+    .param .u64 mma2_acc_03,
+    .param .u64 mma2_acc_47,
+    .param .u64 mma3_acc_03,
+    .param .u64 mma3_acc_47
 ) {
     // Load the A, B pointers into registers
     .reg .u64 rptr_a, rptr_b;
@@ -45,14 +45,14 @@
     bar.warp.sync WAIT_ALL_THREADS;
     
     .reg .u64 %qptr<8>;
-    ld.param.u64 %qptr0, [qp0_acc_03];
-    ld.param.u64 %qptr1, [qp0_acc_47];
-    ld.param.u64 %qptr2, [qp1_acc_03];
-    ld.param.u64 %qptr3, [qp1_acc_47];
-    ld.param.u64 %qptr4, [qp2_acc_03];
-    ld.param.u64 %qptr5, [qp2_acc_47];
-    ld.param.u64 %qptr6, [qp3_acc_03];
-    ld.param.u64 %qptr7, [qp3_acc_47];
+    ld.param.u64 %qptr0, [mma0_acc_03];
+    ld.param.u64 %qptr1, [mma0_acc_47];
+    ld.param.u64 %qptr2, [mma1_acc_03];
+    ld.param.u64 %qptr3, [mma1_acc_47];
+    ld.param.u64 %qptr4, [mma2_acc_03];
+    ld.param.u64 %qptr5, [mma2_acc_47];
+    ld.param.u64 %qptr6, [mma3_acc_03];
+    ld.param.u64 %qptr7, [mma3_acc_47];
 
     // Load all accumulators into registers
     ld.v4.f32 {%Rc0, %Rc1, %Rc2, %Rc3}, [%qptr0];
