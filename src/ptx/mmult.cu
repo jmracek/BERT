@@ -26,6 +26,9 @@ constexpr int SHMEM_TILE_SIZE = 4 * 64;
 
 using copy_t = float4;
 
+// Since this struct has size which is a power of two, when we cast memory locations to thread_copy_t*
+// and dereference, the compiler will generate vectorized load/store instructions.  Note that the underlying
+// pointer must be 16-byte aligned for this to work.
 struct thread_copy_t {
     float elts[16];
 };
@@ -52,7 +55,7 @@ struct thread_copy_t {
 *   5. Store the result to the output from fragments
 */
 __global__
-void forward(half* W, half* X, float* b, float* out) {
+void forward(half* W, half* X, float* b, float* out, int ldw, int ldx, int ldo) {
     extern __shared__ half shmem[];
 
     // Some constants we will need to compute offsets into memory...
@@ -73,7 +76,7 @@ void forward(half* W, half* X, float* b, float* out) {
     
     // STEP 1
     // This should get coalesced to only 4 glmem accesses
-    if (tid < GLOBAL_TILE_WIDTH / sizeof(copy_t)) {
+    if ( tid * sizeof(copy_t) / sizeof(float) < GLOBAL_TILE_WIDTH ) {
         *((copy_t *)shmem_ptr_float + tid) = *((copy_t *)(b + global_col_offset) + tid);
     }
     __syncthreads();
@@ -85,7 +88,7 @@ void forward(half* W, half* X, float* b, float* out) {
     float thread_bias_elts[16];
     // Perform the copy from shmem to registers.  There should be zero bank conflicts here, because
     // all threads in a given quad pair access the same memory locations.
-    *((thread_copy_t *)&thread_bias_etls[0]) = *((thread_copy_t *)(shmem_ptr_float + warp_bias_offset) + (quad_pair >> 1));
+    *((thread_copy_t *)&thread_bias_elts[0]) = *((thread_copy_t *)(shmem_ptr_float + warp_bias_offset) + (quad_pair >> 1));
     // Now, rearrange the elements so they are put into their appropriate fragments.
 #pragma unroll
     for (int i = 0; i < 4; i += 2) {
@@ -94,6 +97,8 @@ void forward(half* W, half* X, float* b, float* out) {
         mma_acc[i + 1][0] = *((copy_t *)&thread_bias_elts[4]);
         mma_acc[i + 1][1] = *((copy_t *)&thread_bias_elts[12]);
     }
+
+    /*
 
     // STEP 3
     const int c = lane % 8;
@@ -145,15 +150,11 @@ void forward(half* W, half* X, float* b, float* out) {
             const int copy_col_offset = (wid  % 2) * 64;
                     
             stream_ptr = start_b + copy_row_offset * GLOBAL_TILE_WIDTH + copy_col_offset;
-            glmem_stream_ptr = W + (global_col_offset + copy_col_offset) * ldx + (global_row_offset + copy_row_offset);
+            // Remember, we overloaded & to return the pointer to the first element of the tile
+            glmem_stream_ptr = &glmem_tile_b + 4 * tile_col_offset * ldx + tile_row_offset * 64;
 
-#pragma unroll
-            for (int i = 0; i < 64; i += 4) {
-                
-            }
         }
 
-        
         
         for (auto& [shmem_tile_a, shmem_tile_b] : shmemStripe) {
             // Each warp performs 4 8x8x4 matrix multiplies
@@ -174,12 +175,49 @@ void forward(half* W, half* X, float* b, float* out) {
             mma_acc[3][1]
         );
     }
-
+    */
 
     // STEP 4
+    // This is very complicated.  See the documentation in the README.  
+    // Search for "Storing from registers to Shared Memory".
+    const int lane_row_offset       = (lane & 3 | (lane >> 3) << 2) | ((quad_pair & 1) << 4);
+    const int shmem_warp_row_offset = (wid >> 2) * 32;
+    const int shmem_warp_col_offset = (wid & 3) * 32;
+
+    // This part moves data from local registers into shmem to construct the entire 128x128 matrix.  
+    //    - Each warp is responsible for transfering its own 32x32 block into shmem.  
+    //    - Each thread performs eight 128-bit loads from its registers to shmem.  
+    //    - Each load experiences a 4-way bank conflict, which is the best we can do.
+#pragma unroll
+    for (int i = 0; i < 8; ++i) {
+        // We shift downward (or upward, depending on if we started hi or low, resp.) by four rows after the first four 
+        // iterations.  That's what the xor part is doing.
+        *((copy_t *)(shmem_ptr_float + shmem_warp_col_offset + 
+            GLOBAL_TILE_WIDTH * (shmem_warp_row_offset + lane_row_offset ^ ((i >> 2) << 2))) + (lane + i & 3) + ((quad_pair >> 1) << 2)) =
+                mma_acc[ (lane + i) & 1 + (( (lane_row_offset ^ ((i >> 2) << 2)) % 8 ) >> 2) ][ ((lane + i) & 3) >> 1 ];
+    }
+    __syncthreads(); // Need to sync here, because now we have a block cooperative load from shmem to glmem
+    
+    // This last part copies the result from shmem to glmem.  Each warp is responsible for transfering eight rows
+    // of the 128x128 output matrix.
+    for (int i = 0; i < 8; ++i) {
+        *((copy_t *)(out + ldo * (global_row_offset + i + wid * 8) + global_col_offset) + lane) = 
+            *((copy_t *)(shmem_ptr_float + GLOBAL_TILE_WIDTH * (i + wid * 8)) + lane);
+    }
 
     return;
 }
 
 
-W*X = (WX)^T^T = (X^TW^T)^T 
+
+/*
+
+    // Unpack the accumulator registers into a copyable object
+#pragma unroll
+    for (int i = 0; i < 4; i += 2) {
+        *((copy_t *)&thread_bias_elts[0])  = mma_acc[i][0];
+        *((copy_t *)&thread_bias_elts[4])  = mma_acc[i + 1][0];
+        *((copy_t *)&thread_bias_elts[8])  = mma_acc[i][1];
+        *((copy_t *)&thread_bias_elts[12]) = mma_acc[i + 1][1];
+    }
+*/
