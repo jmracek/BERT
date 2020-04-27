@@ -1,23 +1,33 @@
 PTXXX=ptxas
 FBXX=fatbinary
-CXX=gcc
+CXX=g++
+C=gcc
 NVXX=nvcc
 
 ARCH=sm_70
 PTXFLAGS=-arch=$(ARCH)
 FBXXFLAGS=-64
 
-all: fatbin
-	$(NVXX) -arch=$(ARCH) -Xptxas="-v" -dlink -o mmult.o mmult.fatbin mmult.cu
+CUDALIB=/usr/local/cuda-10.2/lib64
+CUDAINCLUDE=/usr/local/cuda-10.2/include
 
-preprocess: mmult.ptx
-	$(CXX) -E - < $< > mmult_proc.ptx
+all: link
+	$(CXX) main.cpp mmult.o mmamult_proc.o link.o -L$(CUDALIB) -lcudart -o main -I$(CUDAINCLUDE)
+
+link: device ptx
+	$(NVXX) --gpu-architecture=$(ARCH) --device-link mmult.o mmamult_proc.o -o link.o
+
+device:
+	nvcc --gpu-architecture=$(ARCH) --device-c mmult.cu
 
 ptx: preprocess
-	$(PTXXX) $(PTXFLAGS) -c -o mmult.sm_70.cubin mmult_proc.ptx
+	$(NVXX) --gpu-architecture=$(ARCH) --device-c mmamult_proc.ptx
 
-fatbin: ptx
-	$(FBXX) -create mmult.fatbin "--image=profile=sm_70,file=mmult.sm_70.cubin" $(FBXXFLAGS)
+preprocess: mmamult.ptx
+	$(C) -E - < $< > mmamult_proc.ptx
+
+
+
 
 clean:
-	rm mmult.o mmult.fatbin mmult_proc.ptx mmult.sm_70.cubin
+	rm mmult.o mmamult_proc.o mmamult_proc.ptx main link.o
