@@ -128,7 +128,6 @@ void forward(half* X, half* W, float* b, float* out, int ldx, int ldw, int ldo, 
     //auto globalStripe = Matrix<half>::glmemTilePairIter(X, W, global_row_offset, global_col_offset);
     half* glmem_tile_a = X + global_row_offset;
     half* glmem_tile_b = W + global_col_offset;
-
     for (int idx = 0; idx < k; idx += GLOBAL_TILE_K) {
         // STEP 3A: Copy tile_a and tile_b matrices from global memory to shared memory in a swizzled fashion.
         // Warps 0 - 7 copy the A matrix to shmem, warps 8 - 15 copy the B matrix
@@ -187,7 +186,8 @@ void forward(half* X, half* W, float* b, float* out, int ldx, int ldw, int ldo, 
         for (int tile_idx = 0; tile_idx < GLOBAL_TILE_WIDTH / MMA_TILE_K; ++tile_idx) {
             ptr_a = start_a + SHMEM_TILE_SIZE * (shmem_tile_a_row * 4 * 8 + tile_idx) + lane_row_a * 64 + lane_bank_a * 8;
             ptr_b = start_b + SHMEM_TILE_SIZE * (shmem_tile_b_col * 4 * 8 + tile_idx) + lane_row_b * 64 + lane_bank_b * 8;
-            /*
+            //test = *((copy_t *)ptr_a);
+            //test2 = *((copy_t *)ptr_b);
             mmultShmemTiles(
                 ptr_a,
                 ptr_b,
@@ -200,7 +200,6 @@ void forward(half* X, half* W, float* b, float* out, int ldx, int ldw, int ldo, 
                 mma_acc[3][0],
                 mma_acc[3][1]
             );
-            */
         }
 
         glmem_tile_a += ldx * GLOBAL_TILE_K;
@@ -224,9 +223,21 @@ void forward(half* X, half* W, float* b, float* out, int ldx, int ldw, int ldo, 
         // iterations.  That's what the xor part is doing.
         *((copy_t *)(shmem_ptr_float + shmem_warp_col_offset + 
             GLOBAL_TILE_WIDTH * (shmem_warp_row_offset + lane_row_offset ^ ((i >> 2) << 2))) + (lane + i & 3) + ((quad_pair >> 1) << 2)) =
-                mma_acc[ (lane + i) & 1 + (( (lane_row_offset ^ ((i >> 2) << 2)) % 8 ) >> 2) ][ ((lane + i) & 3) >> 1 ];
+                mma_acc[ ((lane + i) & 1) | ((i >> 2) << 1) ][ ((lane + i) & 3) >> 1 ];
     }
+                //mma_acc[ (lane + i) & 1 + (( (lane_row_offset ^ ((i >> 2) << 2)) % 8 ) >> 2) ][ ((lane + i) & 3) >> 1 ];
     __syncthreads(); // Need to sync here, because now we have a block cooperative load from shmem to glmem
+/*
+
+    // Unpack the accumulator registers into a copyable object
+#pragma unroll
+    for (int i = 0; i < 4; i += 2) {
+        *((copy_t *)&thread_bias_elts[0])  = mma_acc[i][0];
+        *((copy_t *)&thread_bias_elts[4])  = mma_acc[i + 1][0];
+        *((copy_t *)&thread_bias_elts[8])  = mma_acc[i][1];
+        *((copy_t *)&thread_bias_elts[12]) = mma_acc[i + 1][1];
+    }
+*/
     
     // This last part copies the result from shmem to glmem.  Each warp is responsible for transfering eight rows
     // of the 128x128 output matrix.
@@ -237,7 +248,6 @@ void forward(half* X, half* W, float* b, float* out, int ldx, int ldw, int ldo, 
 
     return;
 }
-
 
 __host__
 void mmultLauncher(half* X, half* W, float* bias, float* out, int ldx, int ldw, int ldo, int k) {
@@ -251,6 +261,8 @@ void mmultLauncher(half* X, half* W, float* bias, float* out, int ldx, int ldw, 
     cudaError_t err_C = cudaMalloc((void **) &d_out, 128 * 128 * sizeof(float));
     cudaError_t err_D = cudaMalloc((void **) &d_bias, 128 * sizeof(float));
     
+    cudaMemcpy(d_A, X, 128 * 128 * sizeof(half), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, W, 128 * 128 * sizeof(half), cudaMemcpyHostToDevice);
     cudaMemcpy(d_bias, bias, 128 * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemset(d_out, 0.0, 128 * 128 * sizeof(float));
     
@@ -270,14 +282,3 @@ void mmultLauncher(half* X, half* W, float* bias, float* out, int ldx, int ldw, 
     cudaFree(d_out);
     cudaFree(d_bias);
 }
-/*
-
-    // Unpack the accumulator registers into a copyable object
-#pragma unroll
-    for (int i = 0; i < 4; i += 2) {
-        *((copy_t *)&thread_bias_elts[0])  = mma_acc[i][0];
-        *((copy_t *)&thread_bias_elts[4])  = mma_acc[i + 1][0];
-        *((copy_t *)&thread_bias_elts[8])  = mma_acc[i][1];
-        *((copy_t *)&thread_bias_elts[12]) = mma_acc[i + 1][1];
-    }
-*/

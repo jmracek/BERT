@@ -2,8 +2,6 @@
 .target sm_70
 .address_size 64
 
-#define WAIT_ALL_THREADS 0xffffffff
-
 /* mmultShmemTiles
 *
 * This function is a PTX wrapper around the 4 mma.sync instructions required to compute a 32x32 block of A * B.  
@@ -31,18 +29,19 @@
 ) {
     // Load the A, B pointers into registers
     .reg .u64 rptr_a, rptr_b;
+    .reg .u64 shmem_ptr_a, shmem_ptr_b;
     ld.param.u64 rptr_a, [ptr_a];
     ld.param.u64 rptr_b, [ptr_b];
+    cvta.to.shared.u64 shmem_ptr_a, rptr_a;
+    cvta.to.shared.u64 shmem_ptr_b, rptr_b;
 
     // Declare all the registers we need for this computation
     .reg .f16x2     %Ra<4>, %Rb<4>;
     .reg .f32       %Rc<8>, %Rd<8>, %Re<8>, %Rf<8>;
     
     // Load A and B matrices from SHMEM into registers
-    ld.shared.v4.b32 {%Ra0, %Ra1, %Ra2, %Ra3}, [rptr_a];
-    bar.warp.sync WAIT_ALL_THREADS;
-    ld.shared.v4.b32 {%Rb0, %Rb1, %Rb2, %Rb3}, [rptr_b];
-    bar.warp.sync WAIT_ALL_THREADS;
+    ld.shared.v4.b32 {%Ra0, %Ra1, %Ra2, %Ra3}, [shmem_ptr_a];
+    ld.shared.v4.b32 {%Rb0, %Rb1, %Rb2, %Rb3}, [shmem_ptr_b];
     
     .reg .u64 %qptr<8>;
     ld.param.u64 %qptr0, [mma0_acc_03];
@@ -53,7 +52,7 @@
     ld.param.u64 %qptr5, [mma2_acc_47];
     ld.param.u64 %qptr6, [mma3_acc_03];
     ld.param.u64 %qptr7, [mma3_acc_47];
-
+    
     // Load all accumulators into registers
     ld.v4.f32 {%Rc0, %Rc1, %Rc2, %Rc3}, [%qptr0];
     ld.v4.f32 {%Rc4, %Rc5, %Rc6, %Rc7}, [%qptr1]; 

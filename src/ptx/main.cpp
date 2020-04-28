@@ -42,7 +42,21 @@ int main(void) {
     float* out = new float[128 * 128];
     float* bias = new float[128];
 
-    for (int i = 0; i < 128; ++i) bias[i] = i;
+    for (int i = 0; i < 128; ++i) bias[i] = 0;
+    
+    half elt = __float2half(1.0);
+    for (int i = 0; i < 128; ++i) {
+        for (int j = 0; j < 128; ++j) {
+            if (i == j) {
+                h_A[i + 128  * j] = elt;
+                h_B[j + 128  * i] = elt;
+            }
+            else {
+                h_A[i + 128  * j] = __float2half(0.0);
+                h_B[j + 128  * i] = __float2half(0.0);
+            }
+        }
+    }
 
     mmultLauncher(h_A, h_B, bias, out, 128, 128, 128, 128);
 
