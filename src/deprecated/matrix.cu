@@ -1,15 +1,13 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
-#include <cuda_fp16.h>
-#include <mma.h>
 #include <random>
 #include <iostream>
 #include <stdio.h>
 #include <vector_types.h>
 
-#define L 256
-#define M 512
-#define N 1024
+#define L 2048
+#define M 2048
+#define N 2048
 
 using copy4_t = int4;
 
@@ -114,10 +112,10 @@ void matrixMultiplyShmem(float* A, float* B, float* C, int l, int m, int n) {
 * 2. Put C from shared memory into an accumulator fragment
 
 */
-
+constexpr int BITS_PER_BYTE             = 8;
 constexpr int THREADS_PER_WARP          = 32;
 constexpr int WMMA_BIT_ALIGNMENT        = 128;
-constexpr int SHMEM_HALF_BANK_OFFSET    = WMMA_BIT_ALIGNMENT / (BITS_PER_BYTE * sizeof(half));
+//constexpr int SHMEM_HALF_BANK_OFFSET    = WMMA_BIT_ALIGNMENT / (BITS_PER_BYTE * sizeof(half));
 constexpr int SHMEM_FLOAT_BANK_OFFSET   = WMMA_BIT_ALIGNMENT / (BITS_PER_BYTE * sizeof(float));
 
 // How should we create tiles of the output matrix and assign threads/warps to those
@@ -138,10 +136,10 @@ constexpr int WARP_WMMA_COLS        = 2;
 constexpr int WARP_WMMA_ROWS        = 4;
 constexpr int BLOCK_WARP_ROWS       = 2;
 constexpr int BLOCK_WARP_COLS       = 4;
-constexpr int BLOCK_WMMA_ROWS       = BLOCK_WARP_ROWS * WARP_ROWS; // 8
-constexpr int BLOCK_WMMA_COLS       = BLOCK_WARP_COLS * WARP_COLS; // 8
+constexpr int BLOCK_WMMA_ROWS       = BLOCK_WARP_ROWS * WARP_WMMA_ROWS; // 8
+constexpr int BLOCK_WMMA_COLS       = BLOCK_WARP_COLS * WARP_WMMA_COLS; // 8
 // This is the number of WMMA fragments along the M-dimension for the tiles of A and B
-constexpr int BLOCK_WMMA_M_DIM      = 4
+constexpr int BLOCK_WMMA_M_DIM      = 4;
 
 constexpr int WMMA_TILE_WIDTH       = 16;
 constexpr int WMMA_TILE_HEIGHT      = 16;
@@ -152,18 +150,18 @@ constexpr int WARP_TILE_HEIGHT      = WARP_WMMA_ROWS * WMMA_TILE_HEIGHT;
 constexpr int BLOCK_TILE_WIDTH      = WMMA_TILE_WIDTH * WARP_WMMA_COLS * BLOCK_WARP_COLS; // 16 * 2 * 4 = 128
 constexpr int BLOCK_TILE_HEIGHT     = WMMA_TILE_HEIGHT * WARP_WMMA_ROWS * BLOCK_WARP_ROWS; // 16 * 4 * 2 = 128
 
-constexpr int WARPS_PER_BLOCKS      = BLOCK_WMMA_ROWS * BLOCK_WMMA_COLS / (WARP_WMMA_COLS * WARP_WMMA_ROWS); 
-constexpr int THREADS_PER_BLOCKS    = THREADS_PER_WARP * WARPS_PER_BLOCK
+constexpr int WARPS_PER_BLOCK       = BLOCK_WMMA_ROWS * BLOCK_WMMA_COLS / (WARP_WMMA_COLS * WARP_WMMA_ROWS); 
+constexpr int THREADS_PER_BLOCK     = THREADS_PER_WARP * WARPS_PER_BLOCK;
 
 // Since we only have 65kB of shared memory available per block, 
 // we choose l and m such that:
 // l * m * 16 * 16 * 2 * 2 <= 65kB => l * m <= 64
 // We choose l = 8 and m = 4.  
-
+/*
 template<typename T>
 __device__
-inline T* offset(T* ptr, int rows, int cols, int lda) {
-    return ptr + lda * rows + cols;
+inline T* offset(T* ptr, int rows, int cols, int stride) {
+    return ptr + stride * rows + cols;
 }
 
 // Args:
@@ -172,73 +170,97 @@ inline T* offset(T* ptr, int rows, int cols, int lda) {
 // C: Row major ordered matrix of size l x n
 __global__
 void matrixMultiplyWmma(float* A, float* B, float* C, int l, int m, int n) {
-    extern __shared__ half shmem[][ + SHMEM_BANK_OFFSET];
+    extern __shared__ half shmem[][WMMA_TILE_WIDTH * BLOCK_WMMA_M_DIM + SHMEM_HALF_BANK_OFFSET];
     const int tid       = threadIdx.x + threadIdx.y * blockDim.x;
     const int block_warp_x = (tid / THREADS_PER_WARP) % BLOCK_WARP_COLS;
     const int block_warp_y = (tid / THREADS_PER_WARP) / BLOCK_WARP_COLS;
     const int lane_id   = tid % THREADS_PER_WARP;
     const int warp_id   = tid / THREADS_PER_WARP;
-    const int tile_row_offset = blockIdx.x * BLOCK_TILE_HEIGHT;
-    const int tile_col_offset = blockIdx.y * BLOCK_TILE_WIDTH;
+    const int tile_col_offset = blockIdx.x * BLOCK_TILE_WIDTH;
+    const int tile_row_offset = blockIdx.y * BLOCK_TILE_HEIGHT;
 
-    // Load C from glmem into shmem
+    // This is where the current warp will write C to in shmem
     float *shmem_float_ptr = offset(
-        std::static_cast<float *>(&shmem[0][0]),    // Memory start
-        warp_id * WMMA_TILE_HEIGHT,                 // Row offset
-        0,                                          // Col offset 
-        BLOCK_TILE_WIDTH                            // Stride
+        (float *)&shmem[0][0],    
+        warp_id * WMMA_TILE_HEIGHT,                
+        0,                                        
+        BLOCK_TILE_WIDTH
     );
 
     // Each warp copies a 16x128 chunk of the C matrix, one row at a time.
     // Each thread copies 4 entries (32 bytes) at a time from glmem
 #pragma unroll
     for (int i = 0; i < WMMA_TILE_HEIGHT; ++i) {
-        float* shmem_ptr = offset(shmem_float_ptr, i, 0, BLOCK_TILE_WIDTH);
-        float* glmem_ptr = offset(C, i + tile_row_offset + warp_id * WMMA_TILE_HEIGHT, tile_col_offset, n);
+        float* shmem_ptr = offset(shmem_float_ptr, warp_id * WMMA_TILE_HEIGHT + i, 0, BLOCK_TILE_WIDTH);
+        float* glmem_ptr = offset(C, tile_row_offset + warp_id * WMMA_TILE_HEIGHT + i, tile_col_offset, n);
         *((copy4_t *)shmem_ptr + lane_id) = *((copy4_t *)glmem_ptr + lane_id);
         // May want to try out a syncthreads in here, rather than after the loop
     }
     __syncthreads();
     
-    // This is where we store all the tiles.
-    wmma::fragment<wmma::accumulator, WMMA_TILE_HEIGHT, WMMA_TILE_WIDTH, IRRELEVANT_DIM, float> c_frag[WARP_WMMA_COLS][WARP_WMMA_ROWS];
-
+    wmma::fragment<wmma::accumulator, WMMA_TILE_HEIGHT, WMMA_TILE_WIDTH, IRRELEVANT_DIM, float> c_frag[WARP_WMMA_ROWS][WARP_WMMA_COLS];
+    
+    // Load the tiles into the fragments
     float* tile_ptr;
 #pragma unroll
-    for (int i = 0; i < WARP_TILE_ROWS; ++i) {
+    for (int i = 0; i < BLOCK_WARP_ROWS; ++i) {
 #pragma unroll
-        for (int j = 0; j < WARP_TILE_COLS; ++j) {
+        for (int j = 0; j < BLOCK_WARP_COLS; ++j) {
             tile_ptr = offset(shmem_float_ptr, i + block_warp_y * WARP_TILE_HEIGHT, j * WMMA_TILE_WIDTH + block_warp_x * WARP_TILE_WIDTH, BLOCK_TILE_WIDTH);
-            wmma::load_matrix_sync(c[i][j], tile_ptr, BLOCK_TILE_WIDTH, wmma::mem_row_major);
+            wmma::load_matrix_sync(c_frag[i][j], tile_ptr, BLOCK_TILE_WIDTH, wmma::mem_row_major);
         }
     }
-    // Load matrix fragments from shared memory into C
-    wmma::fill_fragment(acc_frag, 0.0f);
-    
-    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> a_frag[WARP_WMMA_COLS];
-    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag[WARP_WMMA_ROWS];
+    __syncthreads();
 
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> a_frag[WARP_WMMA_ROWS];
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag[WARP_WMMA_COLS];
 
-    wmma::load_matrix_sync(a_frag, a + aRow + aCol * lda, lda);
-    wmma::load_matrix_sync(b_frag, b + bRow + bCol * ldb, ldb);
-
-    /* 
     // Loop for sliding through tiles on A and B.
     for (int tile_idx = 0; tile_idx < m / TILE_WIDTH; ++tile_idx) {
-        // Copy A and B from global memory into shared memory.
-        
+        // Copy A and B from global memory into shared memory.  
+        // 1. All warps with block_warp_y = 0 copy A, and those with block_warp_y = 1 copy B
+        if (block_warp_y == 0) {
+#pragma unroll
+            for (int i = 0; i < 2 * WMMA_TILE_HEIGHT; i += 4) {
+                half* shmem_ptr_half = offset(
+                    &shmem[0][0],
+                    block_warp_x * 2 * WMMA_TILE_HEIGHT + lane_id / 8 + i, 
+                    0, 
+                    BLOCK_WMMA_M_DIM * WMMA_TILE_WIDTH + SHMEM_HALF_BANK_OFFSET
+                );
+                half* glmem_ptr_half = offset(
+                    A, 
+                    tile_row_offset + block_warp_x * 2 * WMMA_TILE_HEIGHT + lane_id / 8 + i, 
+                    tile_idx * BLOCK_WMMA_M_DIM * WMMA_TILE_WIDTH, 
+                    l
+                )
+                
+                *((copy4_t *)shmem_ptr_half + lane_id % 8) = *((copy4_t *)glmem_ptr_half + lane_id % 8)
+            }
+        }
+        else {
+
+        }
         __syncthreads();
 
-        // (i,j) indexes the tiles of the output matrix.
-#pragma unroll
-        for (int i = 0; i < WMMA_TILE_ROWS; ++i) {
-#pragma unroll
-            for (int j = 0; j < WMMA_TILE_COLS; ++j) {
 
+// These three loops are performing the actual matrix multiplication over the global tile.
 #pragma unroll
-                for (int k = 0; k < WMMA_TILE_K; ++k)
-                    wmma::mma_sync(c_frag[i][j], a_frag[k], b_frag[k], c_frag[i][j]);
-                
+        for (int k = 0; k < WMMA_TILE_K; ++k) {
+#pragma unroll             
+            for (int j = 0; j < WARP_WMMA_COLS; ++j) {
+                tile_ptr = &shmem[idx_b + block_warp_x * WARP_TILE_WIDTH + j * WMMA_TILE_WIDTH][k * WMMA_TILE_WIDTH];
+                wmma::load_matrix_sync(b[j], tile_ptr, BLOCK_WMMA_M_DIM * WMMA_TILE_WIDTH + SHMEM_HALF_BANK_OFFSET, wmma:mem_col_major);
+#pragma unroll
+                for (int i = 0; i < WARP_WMMA_ROWS; ++i) {
+                    if (j == 0) {
+                        tile_ptr = &shmem[block_warp_y * WARP_TILE_HEIGHT + i * WMMA_TILE_HEIGHT][k * WMMA_TILE_WIDTH];
+                        wmma::load_matrix_sync(a[i], tile_ptr, BLOCK_WMMA_M_DIM * WMMA_TILE_WIDTH + SHMEM_HALF_BANK_OFFSET, wmma:mem_row_major);
+                    }
+                    
+                    // Perform the matrix multiplication of the WMMA tile
+                    wmma::mma_sync(c_frag[i][j], a_frag[i], b_frag[j], c_frag[i][j]);
+                }
             }
         }
     }
@@ -256,10 +278,20 @@ void matrixMultiplyWmma(float* A, float* B, float* C, int l, int m, int n) {
             wmma::store_matrix_sync(shmem_ptr, c[i][j], stride, wmma::mem_row_major);
         }
     }
-    // Copy from shmem into glmem
-*/
-}
 
+    
+    // Copy from shmem into glmem
+#pragma unroll
+    for (int i = 0; i < WMMA_TILE_HEIGHT; ++i) {
+        float* shmem_ptr = offset(shmem_float_ptr, i, 0, BLOCK_TILE_WIDTH);
+        float* glmem_ptr = offset(C, i + tile_row_offset + warp_id * WMMA_TILE_HEIGHT, tile_col_offset, n);
+        *((copy4_t *)shmem_ptr + lane_id) = *((copy4_t *)glmem_ptr + lane_id);
+        // May want to try out a syncthreads in here, rather than after the loop
+    }
+    __syncthreads();
+
+}
+*/
 
 void initRandMatrix(float* mem, int rows, int cols) {
     static std::random_device rd;  
@@ -308,6 +340,9 @@ void printMatrix(float* mem, int rows, int cols) {
 
 
 int main(void) {
+
+    //cudaFuncSetAttribute(matrixMultiplyWmma, cudaFuncAttributeMaxDynamicSharedMemorySize, BLOCK_TILE_HEIGHT * BLOCK_TILE_WIDTH * sizeof(float));
+
     float* h_A = new float[l * m];
     float* h_Acol = new float[l * m];
     float* h_B = new float[m * n];
@@ -350,9 +385,9 @@ int main(void) {
     dim3 dimGrid(n / TILE_WIDTH, l / TILE_WIDTH);
     matrixMultiplyShmem<<<dimGrid, dimBlock>>>(d_A, d_B, d_C3, l, m, n);
     
-    dim3 dimBlock2(THREADS_PER_WARP * BLOCK_WARP_COLS, BLOCK_WARP_COLS);
-    dim3 dimGrid2(l / BLOCK_TILE_WIDTH, n / BLOCK_TILE_HEIGHT);
-    matrixMultiplyShmem<<<dimGrid2, dimBlock2, BLOCK_TILE_WIDTH * BLOCK_TILE_HEIGHT * sizeof(float) >>>(d_A, d_B, d_C3, l, m, n);
+    dim3 dimBlock2(THREADS_PER_WARP * BLOCK_WARP_COLS, BLOCK_WARP_ROWS);
+    dim3 dimGrid2(n / BLOCK_TILE_WIDTH, l / BLOCK_TILE_HEIGHT);
+   // matrixMultiplyWmma<<<dimGrid2, dimBlock2, BLOCK_TILE_WIDTH * BLOCK_TILE_HEIGHT * sizeof(float) >>>(d_A, d_B, d_C3, l, m, n);
 
     cudaMemcpy(h_C, d_C, l * n * sizeof(float), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_C3, d_C3, l * n * sizeof(float), cudaMemcpyDeviceToHost);

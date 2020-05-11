@@ -1,0 +1,71 @@
+All PTX scripts must begin with the following:
+.version 6.4
+.target sm_70, sm_75
+.address_size 64
+
+Kernel functions specified using syntax:
+.entry kernelName( .param [param specifiers], ..., .param [param specifiers]) {
+    [kernel body]
+}
+
+Device functions are specified using the syntax:
+.func (.reg type_specifier name) funcName( [.param, .reg, ...] [type specifiers], ..., .param [...]) {
+    [func body]
+    ret [object to return];
+}
+
+Types:
+Signed integers:    .s8  .s16 .s32 .s64
+Unsigned integers:  .u8  .u16 .u32 .u64
+Floating point:     .f16 .f32 .f64
+Bits:               .b8  .b16 .b32 .b64
+Predicate:          .pred
+
+There are also some vector types - e.g. .f16x2
+
+General form of a variable declaration:
+    .space .type name;
+Where:
+    .space = {.global, .shared, .local, .reg, .const}
+    .type = {.s8, .s16, ...}
+
+Can also parameterize declaration of variables:
+    .reg .u32 %x<3>;
+is equivalent to
+    .reg .u32 %x1, %x2, %x3;
+
+
+Vector types:
+    .space .v{2,4} .type name;
+
+Array declarations are similar to C:
+    .space [.align BYTE_ALIGNMENT] .type name[N]; 
+
+N denotes the number of elements of the given type to store in the array
+
+General notes about operands:
+
+- Operands for ALU instructions must all be in .reg space
+- Basic operations
+    ld: load - move data from address space to registers
+    st: store - move data from registers to address space
+    mov: move - copy data between registers
+    cvt: convert - clear
+- Addresses are treated like normal unsigned longs (or ints, depending if 32-bit address space).  There is no pointer arithmetic for addresses.  Addresses can be dereferenced by enclosing them in square brackets.
+- Some of the operations support vector operands - e.g. mov.v4 can be used to move four items at a time.
+    - Brace enclosed lists can be used to pattern match onto vectors
+- The .param address space is generally for arguments passed to the kernel from the host.  These are constant over every thread in the block.  This memory can be loaded into registers using the ld.param instruction
+
+
+Important special registers:
+%tid.{x,y,z}  := threadIdx.{x,y,z}
+%ntid.{x,y,z} := blockDim.{x,y,z}
+%ctaid.{x,y,z} := blockIdx.{x,y,z}
+%laneid
+%warpid
+%nwarpid := number of warps per block
+%nctaid := number of blocks per grid
+
+
+
+
