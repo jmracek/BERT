@@ -37,7 +37,7 @@ void printMatrix(float* mem, int rows, int cols) {
 }
 
 int main(void) {
-    int m = 128;
+    int m = 2048;
     int k = m;
     int n = m;
 

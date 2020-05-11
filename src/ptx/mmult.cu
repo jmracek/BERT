@@ -446,9 +446,6 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
     const int shmem_warp_row_offset = warp_row * 32;
     const int shmem_warp_col_offset = warp_col * 32;
     
-    if (blockIdx.x == 0 and blockIdx.y == 0) {
-        printf("%d %d %d %d %d\n", lane, wid, shmem_warp_row_offset, shmem_warp_col_offset, lane_row_offset); 
-    }
     // Copy first set of elements (C
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
