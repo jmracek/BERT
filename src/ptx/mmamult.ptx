@@ -4,7 +4,10 @@
 
 /* mmultShmemTiles
 *
-* This function is a PTX wrapper around the 4 mma.sync instructions required to compute a 32x32 block of A * B.  
+* This function is a PTX wrapper around the 4 mma.sync instructions required to compute a 32x32 block of A * B + C.  
+* It was an interesting attempt to combine all four intertwined MMA operations in a single device function, but in
+* practice I'm seeing a lot of register spilling that I don't know how to deal with.  This resulted in the second
+* device function found here, mma_mult_acc, which performs only a single instruction at a time.
 *
 * ARGS:
 *   ptr_a:  Pointer to the 128-bits of shared memory containing the 8 fp16 elements of the A matrix
@@ -106,5 +109,39 @@
     st.v4.f32 [%qptr6], {%Rf0, %Rf1, %Rf2, %Rf3};
     st.v4.f32 [%qptr7], {%Rf4, %Rf5, %Rf6, %Rf7};
 
+    ret;
+}
+
+
+/*
+This device function is similar to the previous one, but we only perform a single MMA and call it four times.
+*/
+.visible .func mma_mult_acc( .param .u64 a, .param .u64 b, .param .u64 c_lo, .param .u64 c_hi ) {
+    // Registers for mma operation
+    .reg .f16x2     %Ra<2>, %Rb<2>;
+    .reg .f32       %Rc<8>;
+    
+    .reg .u64 %qptr<2>;
+    // Load a and b values into registers
+    ld.param.u64 %qptr0, [a];
+    ld.param.u64 %qptr1, [b];
+    ld.v2.b32 {%Ra0, %Ra1}, [%qptr0];
+    ld.v2.b32 {%Rb0, %Rb1}, [%qptr1];
+
+    // Load c values into registers
+    ld.param.u64 %qptr0, [c_lo];
+    ld.param.u64 %qptr1, [c_hi];
+    ld.v4.f32 {%Rc0, %Rc1, %Rc2, %Rc3}, [%qptr0];
+    ld.v4.f32 {%Rc4, %Rc5, %Rc6, %Rc7}, [%qptr1]; 
+
+    mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 
+        {%Rc0, %Rc1, %Rc2, %Rc3, %Rc4, %Rc5, %Rc6, %Rc7},
+        {%Ra0, %Ra1},
+        {%Rb0, %Rb1},
+        {%Rc0, %Rc1, %Rc2, %Rc3, %Rc4, %Rc5, %Rc6, %Rc7};
+
+    st.v4.f32 [%qptr0], {%Rc0, %Rc1, %Rc2, %Rc3};
+    st.v4.f32 [%qptr1], {%Rc4, %Rc5, %Rc6, %Rc7};
+    
     ret;
 }

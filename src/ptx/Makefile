@@ -4,7 +4,7 @@ CXX=g++
 C=gcc
 NVXX=nvcc
 
-ARCH=sm_70
+ARCH=sm_75
 PTXFLAGS=-arch=$(ARCH)
 FBXXFLAGS=-64
 
@@ -18,10 +18,10 @@ link: device ptx
 	$(NVXX) --gpu-architecture=$(ARCH) --device-link mmult.o mmamult.o -o link.o
 
 device:
-	nvcc -Xptxas="-O3" --gpu-architecture=$(ARCH) --device-c mmult.cu
+	$(NVXX) -Xptxas="-v -O3" --gpu-architecture=$(ARCH) --device-c mmult.cu
 
 ptx: mmamult.ptx
-	$(NVXX) -Xptxas="-O3" --gpu-architecture=$(ARCH) --device-c mmamult.ptx
+	$(NVXX) -Xptxas="-v -O3" --gpu-architecture=$(ARCH) --device-c mmamult.ptx
 
 #preprocess: mmamult.ptx
 #	$(C) -E - < $< > mmamult_proc.ptx
