@@ -99,21 +99,13 @@ void forward_shmem_128_128(half* X, half* W, float* b, float* out, int ldx, int 
     __syncthreads();
 
     // STEP 2
-    float4 mma_acc[4][2];
-    // This is a temporary buffer for retrieving elements from shmem.  They'll be appropriately
-    // copied/reorganized into the fragments above.
-    float thread_bias_elts[16];
-    // Perform the copy from shmem to registers.  There should be zero bank conflicts here, because
-    // all threads in a given quad pair access the same memory locations.
-    *((thread_copy_t *)&thread_bias_elts[0]) = *((thread_copy_t *)(shmem_ptr_float + warp_bias_offset) + (quad_pair >> 1));
-    // Now, rearrange the elements so they are put into their appropriate fragments.
-#pragma unroll
-    for (int i = 0; i < 4; i += 2) {
-        mma_acc[i][0] = *((copy_t *)&thread_bias_elts[0]);
-        mma_acc[i][1] = *((copy_t *)&thread_bias_elts[8]);
-        mma_acc[i + 1][0] = *((copy_t *)&thread_bias_elts[4]);
-        mma_acc[i + 1][1] = *((copy_t *)&thread_bias_elts[12]);
-    }
+    float accumulators[32];
+    float* C = &accumulators[0];
+    float* D = &accumulators[16];
+    
+    // Copy from shmem to C, then copy C to D.
+    *((thread_copy_t *)C) = *((thread_copy_t *)(shmem_ptr_float + warp_bias_offset) + (quad_pair >> 1));
+    *((thread_copy_t *)D) = *((thread_copy_t *)C);
     
     // STEP 3
     // Throughout, I'm going to use & instead of % and >> instead of /
@@ -205,24 +197,77 @@ void forward_shmem_128_128(half* X, half* W, float* b, float* out, int ldx, int 
         //  -> traversing shmem during mmult is done incorrectly
         // Fragments are being loaded in the incorrect permutation
         // Fragments are being printed in the incorrect permutation
+        
+        ptr_a = start_a + SHMEM_TILE_SIZE * shmem_tile_a_row * 4 * 8 + lane_row_a * 64 + lane_bank_a * 8;
+        ptr_b = start_b + SHMEM_TILE_SIZE * shmem_tile_b_col * 4 * 8 + lane_row_b * 64 + lane_bank_b * 8;
+
+        half A_elts[8]; 
+        half B_elts[8];
+        unsigned* A = reinterpret_cast<unsigned *>(&A_elts[0]);
+        unsigned* B = reinterpret_cast<unsigned *>(&B_elts[0]);
  
         // STEP 3B: Iterate over shmem tiles and perform the matrix mult
 #pragma unroll
         for (int tile_idx = 0; tile_idx < GLOBAL_TILE_WIDTH / MMA_TILE_K; ++tile_idx) {
-            ptr_a = start_a + SHMEM_TILE_SIZE * (shmem_tile_a_row * 4 * 8 + tile_idx) + lane_row_a * 64 + lane_bank_a * 8;
-            ptr_b = start_b + SHMEM_TILE_SIZE * (shmem_tile_b_col * 4 * 8 + tile_idx) + lane_row_b * 64 + lane_bank_b * 8;
-            mmultShmemTiles(
-                ptr_a,
-                ptr_b,
-                mma_acc[0][0],
-                mma_acc[0][1],
-                mma_acc[1][0],
-                mma_acc[1][1],
-                mma_acc[2][0],
-                mma_acc[2][1],
-                mma_acc[3][0],
-                mma_acc[3][1]
+
+            *((copy_t *)A) = *((copy_t *)ptr_a);
+            *((copy_t *)B) = *((copy_t *)ptr_b);
+
+            // * -
+            // - -
+            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
+                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
+                "{%8, %9},\n\t"
+                "{%10, %11},\n\t"
+                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
+                "=f"(C[0]), "=f"(C[1]), "=f"(C[2]), "=f"(C[3]), "=f"(C[8]), "=f"(C[9]), "=f"(C[10]), "=f"(C[11]) :
+                 "r"(A[0]),  "r"(A[1]), 
+                 "r"(B[0]),  "r"(B[1]), 
+                 "f"(C[0]),  "f"(C[1]),  "f"(C[2]),  "f"(C[3]),  "f"(C[8]),  "f"(C[9]),  "f"(C[10]),  "f"(C[11])
             );
+            
+            // - *
+            // - -
+            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
+                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
+                "{%8, %9},\n\t"
+                "{%10, %11},\n\t"
+                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
+                "=f"(C[4]), "=f"(C[5]), "=f"(C[6]), "=f"(C[7]), "=f"(C[12]), "=f"(C[13]), "=f"(C[14]), "=f"(C[15]) :
+                 "r"(A[0]),  "r"(A[1]), 
+                 "r"(B[2]),  "r"(B[3]), 
+                 "f"(C[4]),  "f"(C[5]),  "f"(C[6]),  "f"(C[7]),  "f"(C[12]),  "f"(C[13]),  "f"(C[14]),  "f"(C[15])
+            );
+            
+            // - -
+            // * -
+            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
+                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
+                "{%8, %9},\n\t"
+                "{%10, %11},\n\t"
+                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
+                "=f"(D[0]), "=f"(D[1]), "=f"(D[2]), "=f"(D[3]), "=f"(D[8]), "=f"(D[9]), "=f"(D[10]), "=f"(D[11]) :
+                 "r"(A[2]),  "r"(A[3]), 
+                 "r"(B[0]),  "r"(B[1]), 
+                 "f"(D[0]),  "f"(D[1]),  "f"(D[2]),  "f"(D[3]),  "f"(D[8]),  "f"(D[9]),  "f"(D[10]),  "f"(D[11])
+            );
+
+            // - -
+            // - *
+            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
+                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
+                "{%8, %9},\n\t"
+                "{%10, %11},\n\t"
+                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
+                "=f"(D[4]), "=f"(D[5]), "=f"(D[6]), "=f"(D[7]), "=f"(D[12]), "=f"(D[13]), "=f"(D[14]), "=f"(D[15]) :
+                 "r"(A[2]),  "r"(A[3]), 
+                 "r"(B[2]),  "r"(B[3]), 
+                 "f"(D[4]),  "f"(D[5]),  "f"(D[6]),  "f"(D[7]),  "f"(D[12]),  "f"(D[13]),  "f"(D[14]),  "f"(D[15])
+            );
+            
+            ptr_a += SHMEM_TILE_SIZE;
+            ptr_b += SHMEM_TILE_SIZE;
+
         }
         // Need to sync here, or else the next load to shmem could begin while some the
         // threads are still computing matrix multiplications.
@@ -246,12 +291,11 @@ void forward_shmem_128_128(half* X, half* W, float* b, float* out, int ldx, int 
     //    - Each load experiences a 4-way bank conflict, which is the best we can do.
 #pragma unroll
     for (int i = 0; i < 8; ++i) {
-        // We shift downward (or upward, depending on if we started hi or low, resp.) by four rows after the first four 
-        // iterations.  That's what the xor part is doing.
         *((copy_t *)(shmem_ptr_float + shmem_warp_col_offset + 
-            GLOBAL_TILE_WIDTH * (shmem_warp_row_offset + lane_row_offset ^ ((i >> 2) << 2))) + ((lane + i) & 3) + ((quad_pair >> 1) << 2)) =
-                mma_acc[ (((lane + i) & 1) | ((quad_pair >> 1) << 1)) ^ ((i >> 2) << 1) ][ ((lane + i) & 3) >> 1 ]; // Registers part is correct.
+            128 * (shmem_warp_row_offset + lane_row_offset ^ ((i >> 2) << 2))) + ((lane + i) & 3) + ((quad_pair >> 1) << 2)) =
+                *((copy_t *)(&accumulators[0]) + ((((lane + i) & 3) | ((quad_pair >> 1) << 2)) ^ ((i >> 2) << 2)));
 
+                //+ (((lane + i) & 3) | ((quad_pair >> 1) << 2)) ^ ((i >> 2) << 2)
     }
     __syncthreads(); // Need to sync here, because now we have a block cooperative load from shmem to glmem
     
@@ -502,7 +546,7 @@ void mmultLauncher(half* X, half* W, float* bias, float* out, int ldx, int ldw, 
     dim3 nblocks2 = dim3(n / 64, m / 64);
     int nthreads2 = 32 * 4;
 
-    //forward_shmem_128_128<<<nblocks, nthreads, mem>>>(d_A, d_B, d_bias, d_out, k, n, n, m, n, k);
+    forward_shmem_128_128<<<nblocks, nthreads, mem>>>(d_A, d_B, d_bias, d_out, k, n, n, m, n, k);
     forward_shmem_64_64<<<nblocks2, nthreads2>>>(d_A, d_B, d_bias, d_out, k, n, n, m, n, k);
 
     cudaMemcpy(out, d_out, m * n * sizeof(float), cudaMemcpyDeviceToHost);
