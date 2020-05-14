@@ -4,27 +4,7 @@
 #include <vector_types.h>
 #include <iostream>
 
-extern "C" inline __device__
-void mmultShmemTiles(
-    half*   ptr_a,
-    half*   ptr_b,
-    float4& mma0_acc_03, 
-    float4& mma0_acc_47, 
-    float4& mma1_acc_03, 
-    float4& mma1_acc_47, 
-    float4& mma2_acc_03, 
-    float4& mma2_acc_47, 
-    float4& mma3_acc_03, 
-    float4& mma3_acc_47
-);
-
-extern "C" inline __device__
-void mma_mult_acc(
-    half*   a,
-    half*   b,
-    float4& c_lo, 
-    float4& c_hi
-);
+#include "Loaders/Loader.hpp"
 
 constexpr int THREADS_PER_WARP = 32;
 constexpr int GLOBAL_TILE_WIDTH = 128;
@@ -38,8 +18,6 @@ constexpr int SHMEM_TILE_SIZE = 4 * 64;
 constexpr int MMA_TILE_M = 8;
 constexpr int MMA_TILE_N = 8;
 constexpr int MMA_TILE_K = 4;
-
-using copy_t = float4;
 
 // Since this struct has size which is a power of two, when we cast memory locations to thread_copy_t*
 // and dereference, the compiler will generate vectorized load/store instructions.  Note that the underlying
@@ -310,7 +288,6 @@ void forward_shmem_128_128(half* X, half* W, float* b, float* out, int ldx, int 
     return;
 }
 
-
 /*
 This kernel performs the identical function as forward_shmem_128_128, but uses a slightly different memory configuration.
 In this kernel, we use 4 warps per block to compute a 64x64 block of the output (c.f. 128x128 for previous).
@@ -328,6 +305,7 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
     const int warp_bias_offset = warp_col * WARP_TILE_WIDTH;
     const int global_col_offset = blockIdx.y * 64;
     const int global_row_offset = blockIdx.x * 64;
+    const int nwarps = blockDim.x / THREADS_PER_WARP;
     
     float* shmem_ptr_float = (float *)&shmem[0];
     
@@ -363,12 +341,14 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
     half* shmem_stream_ptr = start_a;
     half* glmem_stream_ptr = nullptr;
 
+
     for (int idx = 0; idx < k; idx += GLOBAL_TILE_K2) {
         // STEP 3A: Copy tile_a and tile_b matrices from global memory to shared memory in a swizzled fashion.
         // Warps 0 - 1 copy the A matrix to shmem, warps 2-3 copy the B matrix
         const int N_SHMEM_TILES_PER_COPY_TILE = 8;
 
         if (wid < 2) {
+            auto shmem_loader = SwizzledGlmemToShmemLoader<64, 64>(lane, wid, 2);
             const int N_SHMEM_TILES_PER_ROW = 4 * N_SHMEM_TILES_PER_COPY_TILE;
             const int COPY_TILE_HEIGHT = 64;
             const int COPY_TILE_WIDTH  = 32;
@@ -401,9 +381,11 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
                 shmem_stream_ptr += SHMEM_TILE_SIZE;
             }
         }
-        // Sync here after the copy
         __syncthreads();
-        
+
+    
+        // This logic is describing how each thread accesses the elements from shmem it needs to perform
+        // the mma.sync instruction
         const int lane_row_a  = lane >> 4 | (warp_row & 1) << 1;
         const int lane_bank_a = (lane >> 4) ^ (lane & 7) ^ ((warp_row & 1) << 1);
         const int lane_row_b  = (lane >> 4) | (warp_col & 1) << 1;
@@ -420,7 +402,6 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
 
 #pragma unroll
         for (int tile_idx = 0; tile_idx < 64 / MMA_TILE_K; ++tile_idx) {
-            
             *((copy_t *)A) = *((copy_t *)ptr_a);
             *((copy_t *)B) = *((copy_t *)ptr_b);
 
@@ -476,16 +457,14 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
                  "f"(D[4]),  "f"(D[5]),  "f"(D[6]),  "f"(D[7]),  "f"(D[12]),  "f"(D[13]),  "f"(D[14]),  "f"(D[15])
             );
             
-            
             ptr_a += SHMEM_TILE_SIZE;
             ptr_b += SHMEM_TILE_SIZE;
         }
-        __syncthreads();
         glmem_tile_a += ldx * GLOBAL_TILE_K2;
         glmem_tile_b += ldw * GLOBAL_TILE_K2;
-
+        __syncthreads();
     }
-    __syncthreads();     
+    
     const int lane_row_offset       = (lane & 3 | (lane >> 3) << 2) | ((quad_pair & 1) << 4);
     const int shmem_warp_row_offset = warp_row * 32;
     const int shmem_warp_col_offset = warp_col * 32;
@@ -496,30 +475,17 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
         *((copy_t *)(shmem_ptr_float + shmem_warp_col_offset + 
             64 * (shmem_warp_row_offset + lane_row_offset ^ ((i >> 2) << 2))) + ((lane + i) & 3) + ((quad_pair >> 1) << 2)) =
                 *((copy_t *)(&accumulators[0]) + ((((lane + i) & 3) | ((quad_pair >> 1) << 2)) ^ ((i >> 2) << 2)));
-
-                //+ (((lane + i) & 3) | ((quad_pair >> 1) << 2)) ^ ((i >> 2) << 2)
     }
     __syncthreads(); // Need to sync here, because now we have a block cooperative load from shmem to glmem
     
 #pragma unroll
     for (int i = 0; i < 32; ++i) {
-        out[ldo * (global_row_offset + i + warp_row * 32) + global_col_offset + 32 * warp_col + lane] = shmem_ptr_float[ 64 * (i + warp_row * 32) + 32 * warp_col + lane ];
+        out[ldo * (global_row_offset + i + warp_row * 32) + global_col_offset + 32 * warp_col + lane] = 
+            shmem_ptr_float[ 64 * (i + warp_row * 32) + 32 * warp_col + lane ];
     }
      
     return;
 }
-
-/*
-            if (lane == 31 && wid == 3 && blockIdx.x == 0 && blockIdx.y == 0) {
-                printf("%f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f\n", C[0], C[1], C[2], C[3], C[4], C[5], C[6], C[7], C[8], C[9], C[10], C[11], C[12], C[13], C[14], C[15]);
-                printf("%f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f\n", D[0], D[1], D[2], D[3], D[4], D[5], D[6], D[7], D[8], D[9], D[10], D[11], D[12], D[13], D[14], D[15]);
-            }
-
-Improvement ideas:
-1) Try having all four warps cooperate to load A, then B, instead of splitting them up.
-*/
-
-
 
 __host__
 void mmultLauncher(half* X, half* W, float* bias, float* out, int ldx, int ldw, int ldo, int m, int n, int k) {
@@ -559,239 +525,3 @@ void mmultLauncher(half* X, half* W, float* bias, float* out, int ldx, int ldw, 
     cudaFree(d_out);
     cudaFree(d_bias);
 }
-
-
-/*
-DEBUGGING:
-    if (tid == 0) {
-        for (int i = 0; i < 128; ++i) {
-            for (int j = 0; j < 128; ++j) {
-                printf("%.1f ", __half2float(*(W + i * ldw + j))); 
-            }
-            printf("\n");
-        }
-    }
-
-
-        printf("%d %d %d %d %d %d %d %d\n", wid, lane, lane_row_a, lane_bank_a, lane_row_b, lane_bank_b, shmem_tile_a_row, shmem_tile_b_col);
-
-
-
-        if (tid == 0) {
-            for(int i = 0; i < 128 * 128; i += 8) {
-                if ((i > 0) && (i % 64 == 0)) printf("\n"); // Every row, newline
-                if ((i > 0) && (i % (64*4) == 0)) printf("\n"); // Every shmem tile, newline
-                printf("%.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f", 
-                    __half2float( *(start_a + i) ),
-                    __half2float( *(start_a + i + 1) ),
-                    __half2float( *(start_a + i + 2) ),
-                    __half2float( *(start_a + i + 3) ),
-                    __half2float( *(start_a + i + 4) ),
-                    __half2float( *(start_a + i + 5) ),
-                    __half2float( *(start_a + i + 6) ),
-                    __half2float( *(start_a + i + 7) )
-                );
-                printf("  ");
-            }
-        }
-        printf("Printing B matrix...\n");
-        if (tid == 0) {
-            for(int i = 0; i < 128 * 128; i += 8) {
-                if ((i > 0) && (i % 64 == 0)) printf("\n"); // Every row, newline
-                if ((i > 0) && (i % (64*4) == 0)) printf("\n"); // Every shmem tile, newline
-                printf("%.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f", 
-                    __half2float( *(start_b + i) ),
-                    __half2float( *(start_b + i + 1) ),
-                    __half2float( *(start_b + i + 2) ),
-                    __half2float( *(start_b + i + 3) ),
-                    __half2float( *(start_b + i + 4) ),
-                    __half2float( *(start_b + i + 5) ),
-                    __half2float( *(start_b + i + 6) ),
-                    __half2float( *(start_b + i + 7) )
-                );
-                printf("  ");
-            }
-        }
-
-        __syncthreads();
-
-
-        if (wid == 0) {
-            printf(
-                "%d %d %d\n", 
-                lane,
-                (SHMEM_TILE_SIZE * (shmem_tile_a_row * 4 * 8) + lane_row_a * 64 + lane_bank_a * 8) / 8,
-                (SHMEM_TILE_SIZE * (shmem_tile_b_col * 4 * 8) + lane_row_b * 64 + lane_bank_b * 8) / 8
-            );
-        }
-
-
-            if (lane == 5 && wid == 0) {
-                printf("A cols: %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", 
-                    __half2float( *(ptr_a ) ),
-                    __half2float( *(ptr_a  + 1) ),
-                    __half2float( *(ptr_a  + 2) ),
-                    __half2float( *(ptr_a  + 3) ),
-                    __half2float( *(ptr_a  + 4) ),
-                    __half2float( *(ptr_a  + 5) ),
-                    __half2float( *(ptr_a  + 6) ),
-                    __half2float( *(ptr_a  + 7) )
-                );
-                printf("B rows: %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", 
-                    __half2float( *(ptr_b ) ),
-                    __half2float( *(ptr_b  + 1) ),
-                    __half2float( *(ptr_b  + 2) ),
-                    __half2float( *(ptr_b  + 3) ),
-                    __half2float( *(ptr_b  + 4) ),
-                    __half2float( *(ptr_b  + 5) ),
-                    __half2float( *(ptr_b  + 6) ),
-                    __half2float( *(ptr_b  + 7) )
-                );
-
-
-                printf("%s %d %d %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", "Top", wid, lane, 
-                    *((float *)&mma_acc[0][0]),
-                    *((float *)&mma_acc[0][0] + 1),
-                    *((float *)&mma_acc[0][0] + 2),
-                    *((float *)&mma_acc[0][0] + 3),
-                    *((float *)&mma_acc[1][0]),
-                    *((float *)&mma_acc[1][0] + 1),
-                    *((float *)&mma_acc[1][0] + 2),
-                    *((float *)&mma_acc[1][0] + 3),
-                    *((float *)&mma_acc[0][1]),
-                    *((float *)&mma_acc[0][1] + 1),
-                    *((float *)&mma_acc[0][1] + 2),
-                    *((float *)&mma_acc[0][1] + 3),
-                    *((float *)&mma_acc[1][1]),
-                    *((float *)&mma_acc[1][1] + 1),
-                    *((float *)&mma_acc[1][1] + 2),
-                    *((float *)&mma_acc[1][1] + 3)
-                );
-                    
-                printf("%s %d %d %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", "Bot", wid, lane, 
-                    *((float *)&mma_acc[2][0]),
-                    *((float *)&mma_acc[2][0] + 1),
-                    *((float *)&mma_acc[2][0] + 2),
-                    *((float *)&mma_acc[2][0] + 3),
-                    *((float *)&mma_acc[3][0]),
-                    *((float *)&mma_acc[3][0] + 1),
-                    *((float *)&mma_acc[3][0] + 2),
-                    *((float *)&mma_acc[3][0] + 3),
-                    *((float *)&mma_acc[2][1]),
-                    *((float *)&mma_acc[2][1] + 1),
-                    *((float *)&mma_acc[2][1] + 2),
-                    *((float *)&mma_acc[2][1] + 3),
-                    *((float *)&mma_acc[3][1]),
-                    *((float *)&mma_acc[3][1] + 1),
-                    *((float *)&mma_acc[3][1] + 2),
-                    *((float *)&mma_acc[3][1] + 3)
-                );
-
-                printf("\n");
-            }
-
-
-        if (tid == 5) {
-            printf("Printing A!\n");
-            for(int i = 0; i < 128 * 128; i += 8) {
-                if ((i > 0) && (i % 64 == 0)) printf("\n"); // Every row, newline
-                if ((i > 0) && (i % (64*4) == 0)) printf("\n"); // Every shmem tile, newline
-                printf("%.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f", 
-                    __half2float( *(start_a + i) ),
-                    __half2float( *(start_a + i + 1) ),
-                    __half2float( *(start_a + i + 2) ),
-                    __half2float( *(start_a + i + 3) ),
-                    __half2float( *(start_a + i + 4) ),
-                    __half2float( *(start_a + i + 5) ),
-                    __half2float( *(start_a + i + 6) ),
-                    __half2float( *(start_a + i + 7) )
-                );
-                printf("  ");
-            }
-            printf("Printing B!\n");
-            for(int i = 0; i < 128 * 128; i += 8) {
-                if ((i > 0) && (i % 64 == 0)) printf("\n"); // Every row, newline
-                if ((i > 0) && (i % (64*4) == 0)) printf("\n"); // Every shmem tile, newline
-                printf("%.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f", 
-                    __half2float( *(start_b + i) ),
-                    __half2float( *(start_b + i + 1) ),
-                    __half2float( *(start_b + i + 2) ),
-                    __half2float( *(start_b + i + 3) ),
-                    __half2float( *(start_b + i + 4) ),
-                    __half2float( *(start_b + i + 5) ),
-                    __half2float( *(start_b + i + 6) ),
-                    __half2float( *(start_b + i + 7) )
-                );
-                printf("  ");
-            }
-        }
-
-        __syncthreads();
-
-        if (lane == 25 && wid == 15) {
-            printf("A cols: %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", 
-                __half2float( *(ptr_a ) ),
-                __half2float( *(ptr_a  + 1) ),
-                __half2float( *(ptr_a  + 2) ),
-                __half2float( *(ptr_a  + 3) ),
-                __half2float( *(ptr_a  + 4) ),
-                __half2float( *(ptr_a  + 5) ),
-                __half2float( *(ptr_a  + 6) ),
-                __half2float( *(ptr_a  + 7) )
-            );
-            printf("B rows: %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", 
-                __half2float( *(ptr_b ) ),
-                __half2float( *(ptr_b  + 1) ),
-                __half2float( *(ptr_b  + 2) ),
-                __half2float( *(ptr_b  + 3) ),
-                __half2float( *(ptr_b  + 4) ),
-                __half2float( *(ptr_b  + 5) ),
-                __half2float( *(ptr_b  + 6) ),
-                __half2float( *(ptr_b  + 7) )
-            );
-
-
-            printf("%s %d %d %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", "Top", wid, lane, 
-                *((float *)&mma_acc[0][0]),
-                *((float *)&mma_acc[0][0] + 1),
-                *((float *)&mma_acc[0][0] + 2),
-                *((float *)&mma_acc[0][0] + 3),
-                *((float *)&mma_acc[1][0]),
-                *((float *)&mma_acc[1][0] + 1),
-                *((float *)&mma_acc[1][0] + 2),
-                *((float *)&mma_acc[1][0] + 3),
-                *((float *)&mma_acc[0][1]),
-                *((float *)&mma_acc[0][1] + 1),
-                *((float *)&mma_acc[0][1] + 2),
-                *((float *)&mma_acc[0][1] + 3),
-                *((float *)&mma_acc[1][1]),
-                *((float *)&mma_acc[1][1] + 1),
-                *((float *)&mma_acc[1][1] + 2),
-                *((float *)&mma_acc[1][1] + 3)
-            );
-                
-            printf("%s %d %d %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", "Bot", wid, lane, 
-                *((float *)&mma_acc[2][0]),
-                *((float *)&mma_acc[2][0] + 1),
-                *((float *)&mma_acc[2][0] + 2),
-                *((float *)&mma_acc[2][0] + 3),
-                *((float *)&mma_acc[3][0]),
-                *((float *)&mma_acc[3][0] + 1),
-                *((float *)&mma_acc[3][0] + 2),
-                *((float *)&mma_acc[3][0] + 3),
-                *((float *)&mma_acc[2][1]),
-                *((float *)&mma_acc[2][1] + 1),
-                *((float *)&mma_acc[2][1] + 2),
-                *((float *)&mma_acc[2][1] + 3),
-                *((float *)&mma_acc[3][1]),
-                *((float *)&mma_acc[3][1] + 1),
-                *((float *)&mma_acc[3][1] + 2),
-                *((float *)&mma_acc[3][1] + 3)
-            );
-
-            printf("\n");
-        }
-
-    __syncthreads();
-
-*/

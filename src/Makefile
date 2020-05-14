@@ -1,7 +1,7 @@
 PTXXX=ptxas
 FBXX=fatbinary
-CXX=g++
-C=gcc
+CXX=g++-7
+C=gcc-7
 NVXX=nvcc
 
 ARCH=sm_75
@@ -12,16 +12,14 @@ CUDALIB=/usr/local/cuda-10.2/lib64
 CUDAINCLUDE=/usr/local/cuda-10.2/include
 
 all: link
-	$(CXX) main.cpp mmult.o mmamult.o link.o -O3 -L$(CUDALIB) -lcudart -o main -I$(CUDAINCLUDE)
+	$(CXX) main.cpp mmult.o link.o -O3 -L$(CUDALIB) -lcudart -o main -I$(CUDAINCLUDE)
 
-link: device ptx
-	$(NVXX) --gpu-architecture=$(ARCH) --device-link mmult.o mmamult.o -o link.o
+link: device
+	$(NVXX) --gpu-architecture=$(ARCH) --device-link mmult.o -o link.o
 
 device:
 	$(NVXX) -Xptxas="-v -O3" --gpu-architecture=$(ARCH) --device-c mmult.cu
 
-ptx: mmamult.ptx
-	$(NVXX) -Xptxas="-v -O3" --gpu-architecture=$(ARCH) --device-c mmamult.ptx
 
 #preprocess: mmamult.ptx
 #	$(C) -E - < $< > mmamult_proc.ptx
