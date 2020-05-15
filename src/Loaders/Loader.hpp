@@ -28,6 +28,39 @@ private:
     const int s;
     const int shmem_row;
     const int shmem_bank;
+
+    __device__
+    void load_a_type(half* src, half* dst, int ld_src) {
+        int glmem_offset = c * sizeof(copy_t) / sizeof(half) + s * ld_src;
+        int shmem_offset = shmem_bank + shmem_row * 8;
+        int tile_i, tile_j;
+        half* glmem_stream_ptr, *shmem_stream_ptr;
+        for (int tile_idx = warp; tile_idx < N_COPY_TILES; tile_idx += nwarps) {
+            // Compute the row and column of the first element of the tile in terms of the tile_idx
+            tile_i = tile_idx / tiles_per_row;
+            tile_j = tile_idx % tiles_per_row;
+            glmem_stream_ptr = src + tile_i * 64 + tile_j * 4 * ld_src;
+            shmem_stream_ptr = dst + SHMEM_TILE_SIZE * tile_idx;
+            *((copy_t *)shmem_stream_ptr + shmem_offset) = *((copy_t *)(glmem_stream_ptr + glmem_offset));
+        }
+    }
+    
+    __device__
+    void load_b_type(half* src, half* dst, int ld_src) {
+        int glmem_offset = c * sizeof(copy_t) / sizeof(half) + s * ld_src;
+        int shmem_offset = shmem_bank + shmem_row * 8;
+        int tile_i, tile_j;
+        half* glmem_stream_ptr, *shmem_stream_ptr;
+        for (int tile_idx = warp; tile_idx < N_COPY_TILES; tile_idx += nwarps) {
+            // Compute the row and column of the first element of the tile in terms of the tile_idx
+            tile_i = tile_idx % tiles_per_col;
+            tile_j = tile_idx / tiles_per_col;
+            glmem_stream_ptr = src + tile_i * 4 + tile_j * 64 * ld_src;
+            shmem_stream_ptr = dst + SHMEM_TILE_SIZE * tile_idx;
+            *((copy_t *)shmem_stream_ptr + shmem_offset) = *((copy_t *)(glmem_stream_ptr + glmem_offset));
+        }
+    }
+
 public:
     __device__
     SwizzledGlmemToShmemLoader(int lane_, int warp_, int nwarps_): 
@@ -41,18 +74,14 @@ public:
     {}
 
     __device__
-    void load(half* src, half* dst, int ld_src) {
-        int glmem_offset = c * sizeof(copy_t) / sizeof(half) + s * ld_src;
-        int shmem_offset = shmem_bank + shmem_row * 8;
-        int tile_i, tile_j;
-        half* glmem_stream_ptr, *shmem_stream_ptr;
-        for (int tile_idx = warp; tile_idx < N_COPY_TILES; tile_idx += nwarps) {
-            // Compute the row and column of the first element of the tile in terms of the tile_idx
-            tile_i = tile_idx / tiles_per_row;
-            tile_j = tile_idx % tiles_per_row;
-            glmem_stream_ptr = src + tile_i * 64 + tile_j * 4 * ld_src;
-            shmem_stream_ptr = dst + SHMEM_TILE_SIZE * tile_idx;
-            *((copy_t *)shmem_stream_ptr + shmem_offset) = *((copy_t *)(glmem_stream_ptr + glmem_offset));
+    void load(half* src, half* dst, int ld_src, tile_t matrix_type) {
+        switch (matrix_type) {
+        case tile_t::a_type: 
+            load_a_type(src, dst, ld_src);
+            break;
+        case tile_t::b_type:
+            load_b_type(src, dst, ld_src);
+            break;
         }
     }
 };
