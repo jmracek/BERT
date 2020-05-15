@@ -341,49 +341,14 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
     half* shmem_stream_ptr = start_a;
     half* glmem_stream_ptr = nullptr;
 
+    auto shmem_loader = GlmemToShmemLoader<64, 64>(lane, wid, nwarps);
 
     for (int idx = 0; idx < k; idx += GLOBAL_TILE_K2) {
-        // STEP 3A: Copy tile_a and tile_b matrices from global memory to shared memory in a swizzled fashion.
-        // Warps 0 - 1 copy the A matrix to shmem, warps 2-3 copy the B matrix
-        const int N_SHMEM_TILES_PER_COPY_TILE = 8;
-
-        if (wid < 2) {
-            auto shmem_loader = SwizzledGlmemToShmemLoader<64, 64>(lane, wid, 2);
-            const int N_SHMEM_TILES_PER_ROW = 4 * N_SHMEM_TILES_PER_COPY_TILE;
-            const int COPY_TILE_HEIGHT = 64;
-            const int COPY_TILE_WIDTH  = 32;
-            const int copy_row = 0;
-            const int copy_col = wid & 1;
-
-            shmem_stream_ptr = start_a + SHMEM_TILE_SIZE * (copy_row * N_SHMEM_TILES_PER_ROW + copy_col * N_SHMEM_TILES_PER_COPY_TILE);
-            glmem_stream_ptr = glmem_tile_a + copy_col * COPY_TILE_WIDTH * ldx + copy_row * COPY_TILE_HEIGHT;
-#pragma unroll
-            for (int i = 0; i < 32; i += 4) {
-                *((copy_t *)shmem_stream_ptr + shmem_offset) = *((copy_t *)(glmem_stream_ptr + glmem_offset));
-                // Move to the right by one tile (4 columns)
-                glmem_stream_ptr += 4 * ldx;
-                shmem_stream_ptr += SHMEM_TILE_SIZE;
-            }
-        }
-        else {
-            const int N_SHMEM_TILES_PER_COL = 4 * N_SHMEM_TILES_PER_COPY_TILE;
-            const int COPY_TILE_HEIGHT = 32;
-            const int COPY_TILE_WIDTH  = 64;
-            const int copy_row = wid & 1;
-            const int copy_col = 0;
-            
-            shmem_stream_ptr = start_b + SHMEM_TILE_SIZE * (copy_row * N_SHMEM_TILES_PER_COPY_TILE + copy_col * N_SHMEM_TILES_PER_COL);
-            glmem_stream_ptr = glmem_tile_b + (copy_row * COPY_TILE_HEIGHT) * ldw + COPY_TILE_WIDTH * copy_col;
-#pragma unroll
-            for (int i = 0; i < 32; i += 4) {
-                *((copy_t *)shmem_stream_ptr + shmem_offset) = *((copy_t *)(glmem_stream_ptr + glmem_offset));
-                glmem_stream_ptr += 4 * ldw;
-                shmem_stream_ptr += SHMEM_TILE_SIZE;
-            }
-        }
+        // STEP 3A: Copy tile_a and tile_b matrices from global memory to shared memory
+        shmem_loader.load(glmem_tile_a, start_a, ldx, tile_t::a_type);
+        shmem_loader.load(glmem_tile_b, start_b, ldw, tile_t::b_type);
         __syncthreads();
 
-    
         // This logic is describing how each thread accesses the elements from shmem it needs to perform
         // the mma.sync instruction
         const int lane_row_a  = lane >> 4 | (warp_row & 1) << 1;
@@ -490,7 +455,7 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
 __host__
 void mmultLauncher(half* X, half* W, float* bias, float* out, int ldx, int ldw, int ldo, int m, int n, int k) {
     cudaFuncSetAttribute(forward_shmem_128_128, cudaFuncAttributeMaxDynamicSharedMemorySize, 128 * 128 * sizeof(float));
-    cudaFuncSetCacheConfig(forward_shmem_64_64, cudaFuncCachePreferL1);
+    //cudaFuncSetCacheConfig(forward_shmem_64_64, cudaFuncCachePreferL1);
 
     half *d_A, *d_B;
     float *d_out, *d_bias;

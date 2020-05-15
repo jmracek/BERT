@@ -63,5 +63,5 @@ int main(void) {
     }
 
     mmultLauncher(h_A, h_B, bias, out, k, n, n, m, n, k);
-    //printMatrix(out, m, n);
+//    printMatrix(out, m, n);
 }
