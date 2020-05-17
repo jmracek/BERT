@@ -8,24 +8,27 @@ ARCH=sm_75
 PTXFLAGS=-arch=$(ARCH)
 FBXXFLAGS=-64
 
+ROOT=..
+SRC_DIR=$(ROOT)/src
+BUILD_DIR=$(ROOT)/build
+
 CUDALIB=/usr/local/cuda-10.2/lib64
 CUDAINCLUDE=/usr/local/cuda-10.2/include
 
-all: link
-	$(CXX) main.cpp mmult.o link.o -O3 -L$(CUDALIB) -lcudart -o main -I$(CUDAINCLUDE)
+SRCFILES=$(wildcard $(SRC_DIR)/Layers/*.cu)
+OBJFILES=$(patsubst $(SRC_DIR)/Layers/%.cu,$(BUILD_DIR)/Layers/%.o,$(SRCFILES))
 
-link: device
-	$(NVXX) --gpu-architecture=$(ARCH) --device-link mmult.o -o link.o
+all: $(BUILD_DIR)/Layers/layers.o $(OBJFILES)
+	$(CXX) $(SRC_DIR)/main.cpp $(BUILD_DIR)/Layers/layers.o $(OBJFILES) -O3 -L$(CUDALIB) -lcudart -o $(BUILD_DIR)/main -I$(CUDAINCLUDE)	
 
-device:
-	$(NVXX) -Xptxas="-v -O3" --gpu-architecture=$(ARCH) --device-c mmult.cu
+$(BUILD_DIR)/Layers/layers.o: $(OBJFILES)
+	$(NVXX) --gpu-architecture=$(ARCH) --device-link $(OBJFILES) -o $@
 
+$(BUILD_DIR)/Layers/%.o: $(SRC_DIR)/Layers/%.cu build
+	$(NVXX) -Xptxas="-v -O3" --gpu-architecture=$(ARCH) -o $@ --device-c $<
 
-#preprocess: mmamult.ptx
-#	$(C) -E - < $< > mmamult_proc.ptx
-
-
-
+build:
+	mkdir -p $(ROOT)/$@ && mkdir -p $(ROOT)/$@/Layers
 
 clean:
-	rm mmult.o mmamult.o main link.o
+	rm -rf ../build

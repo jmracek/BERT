@@ -4,7 +4,7 @@
 #include <vector_types.h>
 #include <iostream>
 
-#include "Loaders/Loader.hpp"
+#include "../Loaders/Loader.hpp"
 
 constexpr int THREADS_PER_WARP = 32;
 constexpr int GLOBAL_TILE_WIDTH = 128;
@@ -324,22 +324,26 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
     *((thread_copy_t *)C) = *((thread_copy_t *)(shmem_ptr_float + warp_bias_offset) + (quad_pair >> 1));
     *((thread_copy_t *)D) = *((thread_copy_t *)C);
     
-    const int c = lane & 7;
-    const int s = lane >> 3;
-    const int shmem_row  = (c & 1) | (c >> 1 & 2);
-    const int shmem_bank =  c << 1 & 4 | s ^ shmem_row;
-    const int glmem_offset  = c * sizeof(copy_t) / sizeof(half) + s * ldx;
-    const int shmem_offset = shmem_bank + shmem_row * 8; // 64 = width of shmem tile
-    
     half* start_a = &shmem[0];
     half* start_b = start_a + 64 * 64;
-
     half* ptr_a = nullptr;
     half* ptr_b = nullptr;
     half* glmem_tile_a = X + global_row_offset;
     half* glmem_tile_b = W + global_col_offset;
-    half* shmem_stream_ptr = start_a;
-    half* glmem_stream_ptr = nullptr;
+
+    // This is local storage for the fragments retrieved from shmem by each thread for mma.sync
+    half A_elts[8]; 
+    half B_elts[8];
+    unsigned* A = reinterpret_cast<unsigned *>(&A_elts[0]);
+    unsigned* B = reinterpret_cast<unsigned *>(&B_elts[0]);
+
+    // This logic is describing how each thread accesses the elements from shmem it needs to perform
+    // the mma.sync instruction
+    const int lane_row_a  = lane >> 4 | (warp_row & 1) << 1;
+    const int lane_bank_a = (lane >> 4) ^ (lane & 7) ^ ((warp_row & 1) << 1);
+    const int lane_row_b  = (lane >> 4) | (warp_col & 1) << 1;
+    const int lane_bank_b_row_0 = (lane & 3) | ((lane & 15) >> 3) << 2;
+    const int lane_bank_b = lane_bank_b_row_0 ^ lane_row_b;
 
     auto shmem_loader = GlmemToShmemLoader<64, 64>(lane, wid, nwarps);
 
@@ -349,21 +353,8 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
         shmem_loader.load(glmem_tile_b, start_b, ldw, tile_t::b_type);
         __syncthreads();
 
-        // This logic is describing how each thread accesses the elements from shmem it needs to perform
-        // the mma.sync instruction
-        const int lane_row_a  = lane >> 4 | (warp_row & 1) << 1;
-        const int lane_bank_a = (lane >> 4) ^ (lane & 7) ^ ((warp_row & 1) << 1);
-        const int lane_row_b  = (lane >> 4) | (warp_col & 1) << 1;
-        const int lane_bank_b_row_0 = (lane & 3) | ((lane & 15) >> 3) << 2;
-        const int lane_bank_b = lane_bank_b_row_0 ^ lane_row_b;
-
         ptr_a = start_a + lane_row_a * 64 + lane_bank_a * 8;
         ptr_b = start_b + lane_row_b * 64 + lane_bank_b * 8;
-
-        half A_elts[8]; 
-        half B_elts[8];
-        unsigned* A = reinterpret_cast<unsigned *>(&A_elts[0]);
-        unsigned* B = reinterpret_cast<unsigned *>(&B_elts[0]);
 
 #pragma unroll
         for (int tile_idx = 0; tile_idx < 64 / MMA_TILE_K; ++tile_idx) {
@@ -430,6 +421,7 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
         __syncthreads();
     }
     
+    // TODO: MOVE THIS LOGIC INTO A CUSTOM LOADER CLASS; RegToGlmemLoader
     const int lane_row_offset       = (lane & 3 | (lane >> 3) << 2) | ((quad_pair & 1) << 4);
     const int shmem_warp_row_offset = warp_row * 32;
     const int shmem_warp_col_offset = warp_col * 32;
