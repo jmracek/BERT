@@ -4,9 +4,20 @@
 #include <cuda_fp16.h>
 #include <vector_types.h>
 #include <iostream>
+#include <stdio.h>
 
 #include "../Constants.hpp"
 #include "../Loaders/Loader.hpp"
+
+#define gpuErrCheck(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess)
+   {
+      fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) exit(code);
+   }
+}
 
 using namespace Constants;
 /*
@@ -343,7 +354,8 @@ void attention_middle(
     // multiple blocks required to cover groups of rows, and we must synchronize between them.
     
     // First compute exponentials of all elements in the registers and sum them.
-    int c_sum = 0, d_sum = 0;
+
+    float c_sum = 0, d_sum = 0;
 #pragma unroll
     for (int i = 0; i < 32; ++i) {
         accumulators[i] = expf(accumulators[i]);
@@ -355,14 +367,14 @@ void attention_middle(
 
     const int row_offset = global_row_offset + warp_row_offset + lane_row_offset;
 
-    atomicAdd(&reduce_glmem[row_offset], (quad_pair & 1) ? d_sum : c_sum);
-    atomicAdd(&reduce_glmem[row_offset ^ 4], (quad_pair & 1) ? c_sum : d_sum);
+    atomicAdd(&reduce_glmem[row_offset], ((quad_pair & 1) ? d_sum : c_sum));
+    atomicAdd(&reduce_glmem[row_offset ^ 4], ((quad_pair & 1) ? c_sum : d_sum));
     grid.sync();
-
+    
     // Read the result and finish the softmax computation
     // TODO: Make this a cooperative load
-    int block_c_sum = quad_pair & 1 ? reduce_glmem[row_offset ^ 4] : reduce_glmem[row_offset];
-    int block_d_sum = quad_pair & 1 ? reduce_glmem[row_offset] : reduce_glmem[row_offset ^ 4];
+    float block_c_sum = quad_pair & 1 ? reduce_glmem[row_offset ^ 4] : reduce_glmem[row_offset];
+    float block_d_sum = quad_pair & 1 ? reduce_glmem[row_offset] : reduce_glmem[row_offset ^ 4];
 #pragma unroll
     for (int i = 0; i < 16; ++i) C[i] /= block_c_sum;
 #pragma unroll
@@ -396,44 +408,46 @@ void attention_middle_launcher(
     half* Q, 
     half* KT, 
     float* out,
-    float* reduce_glmem,
     int max_seq_len, 
     int attention_dim, 
     int ldo
 ) {
     half *d_A, *d_B;
-    float *d_out;
+    float *d_out, *d_glmem;
 
-    cudaError_t err_A = cudaMalloc((void **) &d_A, max_seq_len * attention_dim * sizeof(half));
-    cudaError_t err_B = cudaMalloc((void **) &d_B, max_seq_len * attention_dim * sizeof(half));
-    cudaError_t err_C = cudaMalloc((void **) &d_out, max_seq_len * max_seq_len * sizeof(float));
+    gpuErrCheck(cudaMalloc((void **) &d_A, max_seq_len * attention_dim * sizeof(half)));
+    gpuErrCheck(cudaMalloc((void **) &d_B, max_seq_len * attention_dim * sizeof(half)));
+    gpuErrCheck(cudaMalloc((void **) &d_out, max_seq_len * max_seq_len * sizeof(float)));
+    gpuErrCheck(cudaMalloc((void **) &d_glmem, max_seq_len * sizeof(float)));
     
-    cudaMemcpy(d_A, Q, max_seq_len * attention_dim * sizeof(half), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_B, KT, max_seq_len * attention_dim * sizeof(half), cudaMemcpyHostToDevice);
-    cudaMemset(d_out, 0.0, max_seq_len * max_seq_len * sizeof(float));
+    gpuErrCheck(cudaMemcpy(d_A, Q, max_seq_len * attention_dim * sizeof(half), cudaMemcpyHostToDevice));
+    gpuErrCheck(cudaMemcpy(d_B, KT, max_seq_len * attention_dim * sizeof(half), cudaMemcpyHostToDevice));
+    gpuErrCheck(cudaMemset(d_out, 0.0, max_seq_len * max_seq_len * sizeof(float)));
+    gpuErrCheck(cudaMemset(d_glmem, 0.0, max_seq_len * sizeof(float)));
     
     dim3 nblocks = dim3(max_seq_len / 64, max_seq_len / 64);
-    int nthreads = 32 * 4;
+    dim3 nthreads = 32 * 4;
     
-    void *args[6];
-    args[0] = (void *)&d_A;
-    args[1] = (void *)&d_B;
-    args[2] = (void *)&d_out;
-    args[3] = (void *)&max_seq_len;
-    args[4] = (void *)&attention_dim;
-    args[5] = (void *)&max_seq_len;
+    void *args[] = {
+        (void *)&d_A,
+        (void *)&d_B,
+        (void *)&d_out,
+        (void *)&d_glmem,
+        (void *)&max_seq_len,
+        (void *)&attention_dim,
+        (void *)&max_seq_len,
+    };
 
-    cudaLaunchCooperativeKernel(
-        (const void *)attention_middle,
+    gpuErrCheck(cudaLaunchCooperativeKernel(
+        (void *)attention_middle,
         nblocks,
         nthreads,
-        &args[0]
-    );
+        &args[0],
+        0,
+        NULL
+    ));
     
     cudaMemcpy(out, d_out, max_seq_len * max_seq_len * sizeof(float), cudaMemcpyDeviceToHost);
-
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) std::cout << "CUDA error: " << cudaGetErrorString(err) << std::endl;
     
     cudaFree(d_A);
     cudaFree(d_B);

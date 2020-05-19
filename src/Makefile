@@ -25,7 +25,7 @@ $(BUILD_DIR)/Layers/layers.o: $(OBJFILES)
 	$(NVXX) --gpu-architecture=$(ARCH) --device-link $(OBJFILES) -o $@
 
 $(BUILD_DIR)/Layers/%.o: $(SRC_DIR)/Layers/%.cu build
-	$(NVXX) -Xptxas="-v -O3" --gpu-architecture=$(ARCH) -o $@ --device-c $<
+	$(NVXX) -Xptxas="-v -O3" -I/home/jmracek/NVIDIA_CUDA-10.2_Samples/common/inc --gpu-architecture=$(ARCH) -o $@ --device-c $<
 
 build:
 	mkdir -p $(ROOT)/$@ && mkdir -p $(ROOT)/$@/Layers

@@ -20,7 +20,6 @@ extern void attention_middle_launcher(
     half* Q, 
     half* KT, 
     float* out,
-    float* reduce_glmem,
     int max_seq_len, 
     int attention_dim, 
     int ldo
@@ -51,14 +50,14 @@ void colOrderFrom(float* row_ordered, float* col_ordered, int rows, int cols) {
 void printMatrix(float* mem, int rows, int cols) {
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
-            std::cout << mem[j + cols * i] << " ";
+            printf("%.5f ", mem[j + cols * i]);
         }
         std::cout << std::endl;
     }
 }
 
 int main(void) {
-    int m = 2048;
+    int m = 128;
     int k = m;
     int n = m;
 
@@ -83,6 +82,8 @@ int main(void) {
         }
     }
 
-    mmultLauncher(h_A, h_B, bias, out, k, n, n, m, n, k);
-//    printMatrix(out, m, n);
+    //mmultLauncher(h_A, h_B, bias, out, k, n, n, m, n, k);
+    attention_middle_launcher(h_A, h_B, out, 128, 128, 128);
+    printMatrix(out, m, n);
+
 }
