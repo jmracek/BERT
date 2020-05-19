@@ -19,7 +19,7 @@ SRCFILES=$(wildcard $(SRC_DIR)/Layers/*.cu)
 OBJFILES=$(patsubst $(SRC_DIR)/Layers/%.cu,$(BUILD_DIR)/Layers/%.o,$(SRCFILES))
 
 all: $(BUILD_DIR)/Layers/layers.o $(OBJFILES)
-	$(CXX) $(SRC_DIR)/main.cpp $(BUILD_DIR)/Layers/layers.o $(OBJFILES) -O3 -L$(CUDALIB) -lcudart -o $(BUILD_DIR)/main -I$(CUDAINCLUDE)	
+	$(CXX) $(SRC_DIR)/main.cpp $(BUILD_DIR)/Layers/layers.o $(OBJFILES) -O3 -L$(CUDALIB) -lcudart -lcudadevrt -o $(BUILD_DIR)/main -I$(CUDAINCLUDE)	
 
 $(BUILD_DIR)/Layers/layers.o: $(OBJFILES)
 	$(NVXX) --gpu-architecture=$(ARCH) --device-link $(OBJFILES) -o $@

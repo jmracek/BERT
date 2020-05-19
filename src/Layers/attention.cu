@@ -1,10 +1,14 @@
-#include "../Loaders/Loader.hpp"
 #include <cooperative_groups.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <vector_types.h>
 #include <iostream>
+
+#include "../Constants.hpp"
+#include "../Loaders/Loader.hpp"
+
+using namespace Constants;
 /*
 
 // 12 warps per block
@@ -194,12 +198,6 @@ void attention_front(
 
 */
 
-constexpr int THREADS_PER_WARP = 32;
-constexpr int WARP_TILE_WIDTH = 32;
-constexpr int WARP_TILE_HEIGHT = 32;
-constexpr int GLOBAL_TILE_K2 = 64;
-constexpr int SHMEM_TILE_SIZE = 4 * 64;
-constexpr int MMA_TILE_K = 4;
 
 /* This kernel computes softmax(QK^T / sqrt(attention_dim), axis = 1)
  * First, we compute the product QK^T, then take the softmax

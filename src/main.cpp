@@ -3,7 +3,28 @@
 #include <stdio.h>
 #include <cuda_fp16.h>
 
-extern void mmultLauncher(half* X, half* W, float* bias, float* out, int ldx, int ldw, int ldo, int m, int n, int k);
+extern void mmultLauncher(
+    half* X, 
+    half* W, 
+    float* bias, 
+    float* out, 
+    int ldx, 
+    int ldw, 
+    int ldo, 
+    int m, 
+    int n, 
+    int k
+);
+
+extern void attention_middle_launcher(
+    half* Q, 
+    half* KT, 
+    float* out,
+    float* reduce_glmem,
+    int max_seq_len, 
+    int attention_dim, 
+    int ldo
+);
 
 void initRandMatrix(float* mem, int rows, int cols) {
     static std::random_device rd;  

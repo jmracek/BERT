@@ -5,19 +5,9 @@
 #include <iostream>
 
 #include "../Loaders/Loader.hpp"
+#include "../Constants.hpp"
 
-constexpr int THREADS_PER_WARP = 32;
-constexpr int GLOBAL_TILE_WIDTH = 128;
-constexpr int GLOBAL_TILE_HEIGHT = 128;
-constexpr int GLOBAL_TILE_K = 128;
-constexpr int GLOBAL_TILE_K2 = 64;
-constexpr int WARP_TILE_WIDTH = 32;
-constexpr int WARP_TILE_HEIGHT = 32;
-constexpr int SHMEM_TILE_SIZE = 4 * 64;
-
-constexpr int MMA_TILE_M = 8;
-constexpr int MMA_TILE_N = 8;
-constexpr int MMA_TILE_K = 4;
+using namespace Constants;
 
 // Since this struct has size which is a power of two, when we cast memory locations to thread_copy_t*
 // and dereference, the compiler will generate vectorized load/store instructions.  Note that the underlying
