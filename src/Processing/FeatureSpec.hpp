@@ -20,20 +20,22 @@ using String = std::string;
 class FeatureSpec {
 private:
     UPtr<HashMap<String, UPtr<Feature>>> name_lookup;
-    UPtr<HashMap<String, std::vector<String>>> graph;
+    UPtr<HashMap<String, std::vector<String>>> op_graph;
     UPtr<std::vector<String>> outputs;
+    UPtr<std::vector<String>> child_nodes;
     
     class Builder {
     friend class FeatureSpec;
     private:
         UPtr<HashMap<String, UPtr<Feature>>> name_lookup;
-        UPtr<HashMap<String, std::vector<String>>> graph;
+        UPtr<HashMap<String, std::vector<String>>> op_graph;
         UPtr<std::vector<String>> outputs;
+        UPtr<std::vector<String>> child_nodes;
     public:
         Builder();
 
         template<typename ConcreteFeature>
-        Builder& addFeature(ConcreteFeature&& feature, std::vector<std::string> dependency_names, bool is_output = true) {
+        Builder& addFeature(ConcreteFeature&& feature, std::vector<String> dependency_names, bool is_output = true) {
             String name = feature.getName();
             // Check that the name is unique
             if (name_lookup->find(name) != name_lookup->end()) {
@@ -45,7 +47,12 @@ private:
             }
 
             name_lookup->insert( {name, std::make_unique<ConcreteFeature>(std::forward<ConcreteFeature>(feature))} );
-            graph->insert( {name, dependency_names} );
+
+            (*op_graph)[name] = std::vector<String>(); 
+            for (const auto& child_name: dependency_names) {
+                (*op_graph)[child_name].emplace_back(name);
+            }
+
             if (is_output) outputs->push_back(name);
 
             return *this;
@@ -57,6 +64,8 @@ private:
 public:
     static Builder newBuilder(void);
     FeatureSpec(Builder& builder);
+    std::vector<String>& getParents(String name);
+   // HashMap<String, void *> alloc(size_t nrows);
 };
 
 #endif

@@ -41,10 +41,11 @@ public:
     virtual void dispatch(MemoryMappedLookupTableFeature* feature) = 0;
 };
 
+/*
 class SeerFeatureVisitor: public FeatureVisitor {
 public:
     void dispatch(BertFeature* feature) override;
     void dispatch(MemoryMappedLookupTableFeature* feature) override;
 };
-
+*/
 #endif

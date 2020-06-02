@@ -27,3 +27,23 @@ BertFeature::BertFeature(
 void BertFeature::accept(FeatureVisitor& visitor) {
     visitor.dispatch(this);
 }
+
+/*
+void SeerFeatureVisitor::dispatch(BertFeature* feature) {
+    // Get the memory we've allocated for this feature
+    // For
+}
+
+class Featurizer {
+private:
+    std::shared_ptr<FeatureSpec> fspec;
+    std::shared_ptr<FeatureVisitor> visitor;
+public:
+    ModelInput process(Request& rq); 
+};
+
+class ModelInput {
+private:
+    std::unordered_map<Input, > inputs;
+};
+*/
