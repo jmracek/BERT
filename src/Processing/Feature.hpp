@@ -3,9 +3,10 @@
 
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
-class FeatureVisitor;
+#include "FeatureVisitor.hpp"
 
 class Feature {
 protected:
@@ -14,8 +15,22 @@ protected:
 public:
     Feature(std::string name);
     std::string getName(void);
-    std::vector<size_t> getShape(size_t nrows);
+    std::vector<size_t> getShape();
     virtual void accept(FeatureVisitor& visitor) = 0;
+};
+
+// Only enable this for arithmetic types
+template<typename T, typename>
+class NumericFeature: public Feature {
+private:
+    T fill_na_value;
+    bool add_na_column;
+public:
+    using type = T;
+    NumericFeature(std::string name, T fill_na_value, bool add_na_column);
+    void accept(FeatureVisitor& visitor) override;
+    T getFillNaValue(void);
+    bool addNaColumn(void);
 };
 
 class MemoryMappedLookupTableFeature: public Feature {
@@ -31,21 +46,9 @@ private:
     int msk_token;
     int max_seq_len;
 public:
+    using type = uint32_t;
     BertFeature(int cls, int sep, int msk, int msl, std::string name = std::string("bert"));
     void accept(FeatureVisitor& visitor) override;
 };
 
-class FeatureVisitor {
-public:
-    virtual void dispatch(BertFeature* feature) = 0;
-    virtual void dispatch(MemoryMappedLookupTableFeature* feature) = 0;
-};
-
-/*
-class SeerFeatureVisitor: public FeatureVisitor {
-public:
-    void dispatch(BertFeature* feature) override;
-    void dispatch(MemoryMappedLookupTableFeature* feature) override;
-};
-*/
 #endif
