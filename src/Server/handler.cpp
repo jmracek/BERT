@@ -101,7 +101,8 @@ void NewConnectionHandler::handle(void) {
         break;
     }  
     
-    handler->handle();    
+    handler->handle();
+
     int close_error = close(this->sock_fd);
     if (close_error < 0) {
         std::cout << "[ERROR]: Could not close socket. Terminating." << std::endl;
@@ -147,12 +148,4 @@ void BatchInferenceRequestHandler::handle(void) {
 /*
  * Design decisions I need to make now:
  *  1) BatchInferenceRequestProto - what does this look like?
- *  request = {
- *      modelId: int,
- *      batchSize: int,
- *      modelInput: {
- *          key1: values1,
- *          ...
- *      }
- *  } 
  */
