@@ -1,10 +1,12 @@
 #include "BatchInferenceWorkflow.hpp"
 
+#include <memory>
+
 void BatchInferenceWorkflow::accept(WorkflowDispatcher& dispatcher) {
     this->state->accept(dispatcher, this);
 }
 
-void BatchInferenceWorkFlow::changeState(std::shared_ptr<BatchInferenceRequestState> new_state) {
+void BatchInferenceWorkFlow::changeState(BatchInferenceRequestState& new_state) {
     this->state = new_state;
 }
 
@@ -44,5 +46,3 @@ void SentClientResponse::accept(WorkflowDispatcher& dispatcher, BatchInferenceWo
 void BatchInferenceWorkflowFailure::accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) {
     dispatcher.dispatch(wf, this);
 }
-
-

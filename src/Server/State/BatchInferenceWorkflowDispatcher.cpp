@@ -1,13 +1,51 @@
+#include "BatchInferenceWorkflowDispatcher.hpp"
+#include "BatchInferenceWorkflow.hpp"
+
+#include <capnp/message.h>
+#include <capnp/serialize-packed.h>
+
 #include <optional>
 
-//TODO
-// 1. parseMessage
-// 2. Decide how to
-//  a) Instantiate visitors
-//  b) Get the result out of a visitor after processing is done
-// 3. 
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, RequestReceived* state) {
+    capnp::PackedFdMessageReader message(wf->sock_fd);
+    wf->rd = std::make_shared<BatchInferenceRequest::Reader>(message.getRoot<BatchInferenceRequest>());    
+    changeState(wf, SentClientResponse::instance());
+}
+
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, RequestParsed* state) {
+    std::optional<ModelConfig> m_config = wf->store->getModelConfig(wf->model_id);
+
+    if (!m_config) {
+        changeState(wf, BatchInferenceWorkflowFailure::instance());
+    }
+    
+    wf->model   = m_config->getModel();
+    wf->fspec   = m_config->getFeatureSpec();
+
+    changeState(wf, ModelConfigReady::instance());
+}
+
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ModelConfigurationReady* state) {
+}
+
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ProcessingFeatures* state) {
+}
+
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ModelInputReady* state) {
+}
+
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, InferenceInProgress* state) {
+}
+
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, PredictionsReady* state) {
+}
+
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, BatchInferenceWorkflowFailure* state) {
+}
 
 
+
+/*
 RequestReceived::parseMessage(BatchInferenceWorkflow* wf) {
     // Look up the API key.  Check request rate, and quit if too high.
        
@@ -21,21 +59,10 @@ RequestReceived::parseMessage(BatchInferenceWorkflow* wf) {
 
     // ...get inputs from the buffer and put them into the hashmap
 
-    changeState(wf, RequestParsed::instance());
 }
 
 // Get the model we need to perform inference
 void RequestParsed::getModelConfig(BatchInferenceWorkflow* wf) {
-    std::optional<ModelConfig> m_config = wf->store->getModelConfig(wf->model_id);
-
-    if (!m_config) {
-        changeState(wf, BatchInferenceWorkflowFailure::instance());
-    }
-    
-    wf->model   = m_config->getModel();
-    wf->fspec   = m_config->getFeatureSpec();
-
-    changeState(wf, ModelConfigReady::instance());
 }
 
 // Perform feature preprocessing
@@ -54,3 +81,5 @@ void ModelInputReady::inference(BatchInferenceWorkflow* wf) {
     wf->outputs = *(wf->model)(wf->inputs);
     changeState(wf, InferenceInProgress::instance());
 }
+
+*/

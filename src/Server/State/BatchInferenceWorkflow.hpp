@@ -1,20 +1,33 @@
+#ifndef INFERENCEWORKFLOW_HPP
+#define INFERENCEWORKFLOW_HPP
 
+#include "../Message/BatchInferenceRequest.capnp.h"
+#include <memory>
 /* The code you'll find here is telling our server what to do when it receives
  * a request to do BatchInference.  We use a hybrid combination of State, Flywheel, 
  * and Visitor patterns.
  */
+class WorkflowDispatcher;
+class BatchInferenceRequestState;
+
+class ThreadPool;
+class ModelStore;
+class Model;
+class ModelInput;
+class ModelOutput;
+class FeatureSpec;
+class FeatureVisitor;
 
 // Later: The type of the model, i.e. MXNetModel, CUDAModel, etc. determines adapters for the input and output.
 class BatchInferenceWorkflow {
 private:
-    friend class BatchInferenceRequestState;
+    friend class BatchInferenceWorkflowDispatcher;
     void changeState(BatchInferenceRequestState* state);
     
     int sock_fd;
     std::shared_ptr<BatchInferenceRequest::Reader> rd;
     std::shared_ptr<BatchInferenceRequestState> state;
     std::shared_ptr<ThreadPool>         pool;
-    std::shared_ptr<Buffer>             data;
     std::shared_ptr<ModelStore>        store;
     std::shared_ptr<FeatureVisitor> fvisitor;
     std::shared_ptr<FeatureSpec>       fspec;
@@ -23,28 +36,74 @@ private:
     std::shared_ptr<ModelOutput>     outputs;
 public:
     BatchInferenceWorkflow(int sock_fd); 
-    void accept(WorkflowDispatcher& dispatcher);
+    void accept(BatchInferenceWorkflowDispatcher& dispatcher);
 };
 
+template<typename T>
+class Singleton {
+public:
+    Singleton& operator= (const Singleton&) = delete;
+    Singleton& operator= (Singleton&&)      = delete;
+    static T& instance(void) {
+        static T object;
+        return object;
+    }
+};
 
 class BatchInferenceRequestState {
-protected:
-    void changeState(BatchInferenceWorkflow* wf, std::shared_ptr<BatchInferenceRequestState> new_state);
 public:
     virtual void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) = 0;
 };
 
-class RequestReceived;
-class RequestParsed;
-class ModelConfigReady;
-class ProcessingFeatures;
-class ProcessingComplete;
-class ModelInputReady;
-class InferenceInProgress;
-class PredictionsReady;
-class SentClientResponse;
-class BatchInferenceWorkflowFailure;
+class RequestReceived: public BatchInferenceRequestState, public Singleton<RequestReceived> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
 
+class RequestParsed: public BatchInferenceRequestState, public Singleton<RequestParsed> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
+
+class ModelConfigurationReady: public BatchInferenceRequestState, public Singleton<ModelConfigurationReady> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
+
+class ProcessingFeatures: public BatchInferenceRequestState, public Singleton<ProcessingFeatures> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
+
+class ProcessingComplete: public BatchInferenceRequestState, public Singleton<ProcessingComplete> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
+
+class ModelInputReady: public BatchInferenceRequestState, public Singleton<ModelInputReady> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
+
+class InferenceInProgress: public BatchInferenceRequestState, public Singleton<InferenceInProgress> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
+
+class PredictionsReady: public BatchInferenceRequestState, public Singleton<PredictionsReady> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
+
+class SentClientResponse: public BatchInferenceRequestState, public Singleton<SentClientResponse> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
+
+class BatchInferenceWorkflowFailure: public BatchInferenceRequestState, public Singleton<BatchInferenceWorkflowFailure> {
+public:
+    void accept(WorkflowDispatcher& dispatcher, BatchInferenceWorkflow* wf) override;
+};
 
 enum class BatchInferenceWorkflowError {
     UNRECOGNIZED_MESSAGE,
@@ -54,29 +113,4 @@ enum class BatchInferenceWorkflowError {
     INFERENCE_ERROR
 };
 
-
-    
-/*
-    void parseMessage();
-    void getModelConfig();
-    void processFeatures();
-    void inference();
-    void getResult();
-    void getError();
-*/
-
-
-class WorkflowDispatcher {
-private:
-    bool _done = false;
-public:
-    virtual void dispatch(BatchInferenceWorkflow* wf, RequestReceived* state) = 0;
-    virtual void dispatch(BatchInferenceWorkflow* wf, RequestParsed* state) = 0;
-    virtual void dispatch(BatchInferenceWorkflow* wf, ModelConfigurationReady* state) = 0;
-    virtual void dispatch(BatchInferenceWorkflow* wf, ProcessingFeatures* state) = 0;
-    virtual void dispatch(BatchInferenceWorkflow* wf, ModelInputReady* state) = 0;
-    virtual void dispatch(BatchInferenceWorkflow* wf, InferenceInProgress* state) = 0;
-    virtual void dispatch(BatchInferenceWorkflow* wf, PredictionsReady* state) = 0;
-    virtual void dispatch(BatchInferenceWorkflow* wf, BatchInferenceWorkflowFailure* state) = 0;
-    bool finished(void) { return this->_done; }
-};
+#endif
