@@ -8,11 +8,13 @@
  * and Visitor patterns.
  */
 class WorkflowDispatcher;
+class BatchInferenceWorkflowDispatcher;
 class BatchInferenceRequestState;
 
 class ThreadPool;
 class ModelStore;
 class Model;
+class ModelConfig;
 class ModelInput;
 class ModelOutput;
 class FeatureSpec;
@@ -22,11 +24,11 @@ class FeatureVisitor;
 class BatchInferenceWorkflow {
 private:
     friend class BatchInferenceWorkflowDispatcher;
-    void changeState(BatchInferenceRequestState* state);
+    void changeState(BatchInferenceRequestState& state);
     
     int sock_fd;
     std::shared_ptr<BatchInferenceRequest::Reader> rd;
-    std::shared_ptr<BatchInferenceRequestState> state;
+    BatchInferenceRequestState&        state;
     std::shared_ptr<ThreadPool>         pool;
     std::shared_ptr<ModelStore>        store;
     std::shared_ptr<FeatureVisitor> fvisitor;

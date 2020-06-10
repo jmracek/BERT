@@ -6,13 +6,19 @@
 
 #include <optional>
 
-void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, RequestReceived* state) {
+void BatchInferenceWorkflowDispatcher::changeState(BatchInferenceWorkflow* wf, BatchInferenceRequestState& new_state) {
+    wf->changeState(new_state);
+}
+
+
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, RequestReceived& state) {
     capnp::PackedFdMessageReader message(wf->sock_fd);
     wf->rd = std::make_shared<BatchInferenceRequest::Reader>(message.getRoot<BatchInferenceRequest>());    
     changeState(wf, SentClientResponse::instance());
 }
 
-void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, RequestParsed* state) {
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, RequestParsed& state) {
+/*
     std::optional<ModelConfig> m_config = wf->store->getModelConfig(wf->model_id);
 
     if (!m_config) {
@@ -21,28 +27,33 @@ void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, Requ
     
     wf->model   = m_config->getModel();
     wf->fspec   = m_config->getFeatureSpec();
-
-    changeState(wf, ModelConfigReady::instance());
+*/
+    changeState(wf, ModelConfigurationReady::instance());
 }
 
-void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ModelConfigurationReady* state) {
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ModelConfigurationReady& state) {
 }
 
-void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ProcessingFeatures* state) {
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ProcessingFeatures& state) {
 }
 
-void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ModelInputReady* state) {
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ProcessingComplete& state) {
 }
 
-void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, InferenceInProgress* state) {
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, ModelInputReady& state) {
 }
 
-void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, PredictionsReady* state) {
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, InferenceInProgress& state) {
 }
 
-void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, BatchInferenceWorkflowFailure* state) {
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, PredictionsReady& state) {
 }
 
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, BatchInferenceWorkflowFailure& state) {
+}
+
+void BatchInferenceWorkflowDispatcher::dispatch(BatchInferenceWorkflow* wf, SentClientResponse& state) {
+}
 
 
 /*

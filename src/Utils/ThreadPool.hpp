@@ -7,7 +7,7 @@
 #include <vector>
 #include <thread>
 
-#include "queue.hpp"
+#include "Queue.hpp"
 
 using work_t = std::function<void()>;
 
@@ -39,6 +39,6 @@ private:
     std::vector<std::thread> pool_;
 };
 
-#include "threadpool.cpp"
+#include "ThreadPool.cpp"
 
 #endif

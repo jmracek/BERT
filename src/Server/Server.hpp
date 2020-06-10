@@ -6,11 +6,9 @@
 #include <iostream>
 #include <memory>
 
-#include "threadpool.hpp"
+#include "../Utils/ThreadPool.hpp"
 #include "exception.hpp"
-#include "handler.hpp"
-#include "memory.hpp"
-#include "buffer.hpp"
+#include "Handler.hpp"
 
 using sockaddr_t = struct sockaddr_in;
 
@@ -22,12 +20,10 @@ private:
     int server_fd; 
     sockaddr_t address;
     std::shared_ptr<ThreadPool> pool;
-    std::shared_ptr<ObjectPool<Buffer>> buffer_source;
 
 public:
     Server(int port) {
         pool = std::make_shared<ThreadPool>(NUM_WORKER_THREADS);
-        buffer_source = std::make_shared<ObjectPool<Buffer>>();
 
         address.sin_family = AF_INET; 
         address.sin_addr.s_addr = INADDR_ANY; 
@@ -69,7 +65,7 @@ public:
                         handler->handle();
                         delete handler;
                     },
-                    new NewConnectionHandler(sock_fd, std::move(client_ptr), buffer_source)
+                    new NewConnectionHandler(sock_fd, std::move(client_ptr))
                 );
             }
         }

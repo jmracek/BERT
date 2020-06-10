@@ -2,7 +2,7 @@
 #include <functional>
 
 #include "exception.hpp"
-#include "server.hpp"
+#include "Server.hpp"
 
 void sigint_handler(int signal) {
     throw SigInt();

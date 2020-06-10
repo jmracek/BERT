@@ -1,10 +1,7 @@
-
 #ifndef HANDLERS_HPP
 #define HANDLERS_HPP
 
 #include <memory>
-#include "memory.hpp"
-#include "buffer.hpp"
 
 using sockaddr_t = struct sockaddr_in;
 
@@ -39,20 +36,14 @@ public:
 };
 
 class NewConnectionHandler: public RequestHandler {
-private:
-    std::shared_ptr<ObjectPool<Buffer>> buffer_source;
 public:
-    NewConnectionHandler(int sock_fd, std::unique_ptr<sockaddr_t>&& client_addr, std::shared_ptr<ObjectPool<Buffer>> buffer_src); 
+    NewConnectionHandler(int sock_fd, std::unique_ptr<sockaddr_t>&& client_addr); 
     void handle(void) override;
 };
 
 class BatchInferenceRequestHandler: public RequestHandler {
-private:
-    size_t message_length;
-    Buffer* buff;
-
 public:
-    BatchInferenceRequestHandler(int sock_fd, std::unique_ptr<sockaddr_t> client_addr, size_t message_length, Buffer* buff);
+    BatchInferenceRequestHandler(int sock_fd, std::unique_ptr<sockaddr_t> client_addr);
     void handle(void) override;
 };
 
