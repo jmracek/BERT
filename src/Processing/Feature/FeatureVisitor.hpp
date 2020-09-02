@@ -7,9 +7,15 @@
 #include <unordered_map>
 
 using Bytes = unsigned char[];
+
 using String = std::string;
+
 template<typename T>
 using UPtr = std::unique_ptr<T>;
+
+template<typename T>
+using SPtr = std::shared_ptr<T>;
+
 template<typename K, typename V>
 using HashMap = std::unordered_map<K,V>;
 
@@ -22,6 +28,8 @@ template<
 >
 class NumericFeature;
 
+// VISITOR ABSTRACT CLASS
+
 class FeatureVisitor {
 public:
     virtual void dispatch(NumericFeature<float>* feature) = 0;
@@ -29,6 +37,8 @@ public:
     virtual void dispatch(BertFeature* feature) = 0;
     virtual void dispatch(MemoryMappedLookupTableFeature* feature) = 0;
 };
+
+// VISITOR CONCRETE CLASSES
 
 class MemoryAllocationFeatureVisitor: public FeatureVisitor {
 private:
@@ -68,9 +78,11 @@ public:
 
 class ProcessingFeatureVisitor: public FeatureVisitor {
 private:
-    UPtr<HashMap<String, UPtr<Bytes>>> memory;
+    std::shared_ptr<MemoryAllocationFeatureVisitor> memory;
+
+    // Need to add space for where to put the result when finished.
 public:
-    ProcessingFeatureVisitor(MemoryAllocationFeatureVisitor& mem_visitor);
+    ProcessingFeatureVisitor(SPtr<MemoryAllocationFeatureVisitor> mem);
     void dispatch(NumericFeature<double>* feature) override;
     void dispatch(NumericFeature<float>* feature) override;
     void dispatch(BertFeature* feature) override;
@@ -81,7 +93,7 @@ class CompositeFeatureVisitor: public FeatureVisitor {
 private:
     UPtr<std::vector<UPtr<FeatureVisitor>>> subvisitors;
 public:
-    CompositeFeatureVisitor(UPtr<std::vector<UPtr<FeatureVisitor>>> subvisitors);
+    CompositeFeatureVisitor(UPtr<std::vector<SPtr<FeatureVisitor>>> subvisitors);
     void dispatch(NumericFeature<double>* feature) override;
     void dispatch(NumericFeature<float>* feature) override;
     void dispatch(BertFeature* feature) override;

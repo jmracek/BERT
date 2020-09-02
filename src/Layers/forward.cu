@@ -9,6 +9,14 @@
 
 using namespace Constants;
 
+extern "C" __device__
+void mma_sync_32_32(
+    unsigned* A,
+    unsigned* B,
+    float* C,
+    float* D
+);
+
 // Since this struct has size which is a power of two, when we cast memory locations to thread_copy_t*
 // and dereference, the compiler will generate vectorized load/store instructions.  Note that the underlying
 // pointer must be 16-byte aligned for this to work.  I should force this with an __aligned__ attribute at some point.
@@ -177,65 +185,13 @@ void forward_shmem_128_128(half* X, half* W, float* b, float* out, int ldx, int 
         // STEP 3B: Iterate over shmem tiles and perform the matrix mult
 #pragma unroll
         for (int tile_idx = 0; tile_idx < GLOBAL_TILE_WIDTH / MMA_TILE_K; ++tile_idx) {
-
             *((copy_t *)A) = *((copy_t *)ptr_a);
             *((copy_t *)B) = *((copy_t *)ptr_b);
 
-            // * -
-            // - -
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(C[0]), "=f"(C[1]), "=f"(C[2]), "=f"(C[3]), "=f"(C[8]), "=f"(C[9]), "=f"(C[10]), "=f"(C[11]) :
-                 "r"(A[0]),  "r"(A[1]), 
-                 "r"(B[0]),  "r"(B[1]), 
-                 "f"(C[0]),  "f"(C[1]),  "f"(C[2]),  "f"(C[3]),  "f"(C[8]),  "f"(C[9]),  "f"(C[10]),  "f"(C[11])
-            );
-            
-            // - *
-            // - -
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(C[4]), "=f"(C[5]), "=f"(C[6]), "=f"(C[7]), "=f"(C[12]), "=f"(C[13]), "=f"(C[14]), "=f"(C[15]) :
-                 "r"(A[0]),  "r"(A[1]), 
-                 "r"(B[2]),  "r"(B[3]), 
-                 "f"(C[4]),  "f"(C[5]),  "f"(C[6]),  "f"(C[7]),  "f"(C[12]),  "f"(C[13]),  "f"(C[14]),  "f"(C[15])
-            );
-            
-            // - -
-            // * -
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(D[0]), "=f"(D[1]), "=f"(D[2]), "=f"(D[3]), "=f"(D[8]), "=f"(D[9]), "=f"(D[10]), "=f"(D[11]) :
-                 "r"(A[2]),  "r"(A[3]), 
-                 "r"(B[0]),  "r"(B[1]), 
-                 "f"(D[0]),  "f"(D[1]),  "f"(D[2]),  "f"(D[3]),  "f"(D[8]),  "f"(D[9]),  "f"(D[10]),  "f"(D[11])
-            );
+            mma_sync_32_32(A, B, C, D);
 
-            // - -
-            // - *
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(D[4]), "=f"(D[5]), "=f"(D[6]), "=f"(D[7]), "=f"(D[12]), "=f"(D[13]), "=f"(D[14]), "=f"(D[15]) :
-                 "r"(A[2]),  "r"(A[3]), 
-                 "r"(B[2]),  "r"(B[3]), 
-                 "f"(D[4]),  "f"(D[5]),  "f"(D[6]),  "f"(D[7]),  "f"(D[12]),  "f"(D[13]),  "f"(D[14]),  "f"(D[15])
-            );
-            
             ptr_a += SHMEM_TILE_SIZE;
             ptr_b += SHMEM_TILE_SIZE;
-
         }
         // Need to sync here, or else the next load to shmem could begin while some the
         // threads are still computing matrix multiplications.
@@ -350,58 +306,8 @@ void forward_shmem_64_64(half* X, half* W, float* b, float* out, int ldx, int ld
         for (int tile_idx = 0; tile_idx < 64 / MMA_TILE_K; ++tile_idx) {
             *((copy_t *)A) = *((copy_t *)ptr_a);
             *((copy_t *)B) = *((copy_t *)ptr_b);
-
-            // * -
-            // - -
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(C[0]), "=f"(C[1]), "=f"(C[2]), "=f"(C[3]), "=f"(C[8]), "=f"(C[9]), "=f"(C[10]), "=f"(C[11]) :
-                 "r"(A[0]),  "r"(A[1]), 
-                 "r"(B[0]),  "r"(B[1]), 
-                 "f"(C[0]),  "f"(C[1]),  "f"(C[2]),  "f"(C[3]),  "f"(C[8]),  "f"(C[9]),  "f"(C[10]),  "f"(C[11])
-            );
             
-            // - *
-            // - -
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(C[4]), "=f"(C[5]), "=f"(C[6]), "=f"(C[7]), "=f"(C[12]), "=f"(C[13]), "=f"(C[14]), "=f"(C[15]) :
-                 "r"(A[0]),  "r"(A[1]), 
-                 "r"(B[2]),  "r"(B[3]), 
-                 "f"(C[4]),  "f"(C[5]),  "f"(C[6]),  "f"(C[7]),  "f"(C[12]),  "f"(C[13]),  "f"(C[14]),  "f"(C[15])
-            );
-            
-            // - -
-            // * -
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(D[0]), "=f"(D[1]), "=f"(D[2]), "=f"(D[3]), "=f"(D[8]), "=f"(D[9]), "=f"(D[10]), "=f"(D[11]) :
-                 "r"(A[2]),  "r"(A[3]), 
-                 "r"(B[0]),  "r"(B[1]), 
-                 "f"(D[0]),  "f"(D[1]),  "f"(D[2]),  "f"(D[3]),  "f"(D[8]),  "f"(D[9]),  "f"(D[10]),  "f"(D[11])
-            );
-
-            // - -
-            // - *
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(D[4]), "=f"(D[5]), "=f"(D[6]), "=f"(D[7]), "=f"(D[12]), "=f"(D[13]), "=f"(D[14]), "=f"(D[15]) :
-                 "r"(A[2]),  "r"(A[3]), 
-                 "r"(B[2]),  "r"(B[3]), 
-                 "f"(D[4]),  "f"(D[5]),  "f"(D[6]),  "f"(D[7]),  "f"(D[12]),  "f"(D[13]),  "f"(D[14]),  "f"(D[15])
-            );
+            mma_sync_32_32(A, B, C, D);
             
             ptr_a += SHMEM_TILE_SIZE;
             ptr_b += SHMEM_TILE_SIZE;

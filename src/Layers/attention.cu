@@ -20,7 +20,15 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 }
 
 using namespace Constants;
-/*
+
+extern "C" __device__
+void mma_sync_32_32(
+    unsigned* A,
+    unsigned* B,
+    float* C,
+    float* D
+);
+
 
 // 12 warps per block
 
@@ -31,6 +39,7 @@ using namespace Constants;
 // At the end of here, we have K, Q, and V in accumulator fragments spread across the warp
 // S = softmax(QK^T / sqrt(d), axis = 1) * V
 
+/*
 * This kernel performs three matrix multiplications to compute Keys, Queries, and Values of a single head of an
 *  attention layer.  Additionally, this kernel transposes the keys when writing to output.
 *  Requirements:
@@ -38,7 +47,10 @@ using namespace Constants;
 *   2) K^T is half precision, row major (NOTE: K in column major order is the same thing as K^T in row major order)
 *   3) V is half precision, row major
 *   TODO: Modify mmult kernel so that it outputs column major ordered instead of row major ordered
-/
+*/
+
+
+/*
 __global__
 void attention_front(
     half* X, 
@@ -52,9 +64,8 @@ void attention_front(
     int ldk, 
     int ldq, 
     int ldv, 
-    int batch_size, 
-    int embed_dim, 
-    int dimW
+    int max_seq_len, 
+    int embed_dim
 ) {
     __shared__ half shmem[64 * 64 * 4];
 
@@ -123,58 +134,8 @@ void attention_front(
         for (int tile_idx = 0; tile_idx < 64 / MMA_TILE_K; ++tile_idx) {
             *((copy_t *)A) = *((copy_t *)ptr_a);
             *((copy_t *)B) = *((copy_t *)ptr_b);
-
-            // * -
-            // - -
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(C[0]), "=f"(C[1]), "=f"(C[2]), "=f"(C[3]), "=f"(C[8]), "=f"(C[9]), "=f"(C[10]), "=f"(C[11]) :
-                 "r"(A[0]),  "r"(A[1]), 
-                 "r"(B[0]),  "r"(B[1]), 
-                 "f"(C[0]),  "f"(C[1]),  "f"(C[2]),  "f"(C[3]),  "f"(C[8]),  "f"(C[9]),  "f"(C[10]),  "f"(C[11])
-            );
             
-            // - *
-            // - -
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(C[4]), "=f"(C[5]), "=f"(C[6]), "=f"(C[7]), "=f"(C[12]), "=f"(C[13]), "=f"(C[14]), "=f"(C[15]) :
-                 "r"(A[0]),  "r"(A[1]), 
-                 "r"(B[2]),  "r"(B[3]), 
-                 "f"(C[4]),  "f"(C[5]),  "f"(C[6]),  "f"(C[7]),  "f"(C[12]),  "f"(C[13]),  "f"(C[14]),  "f"(C[15])
-            );
-            
-            // - -
-            // * -
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(D[0]), "=f"(D[1]), "=f"(D[2]), "=f"(D[3]), "=f"(D[8]), "=f"(D[9]), "=f"(D[10]), "=f"(D[11]) :
-                 "r"(A[2]),  "r"(A[3]), 
-                 "r"(B[0]),  "r"(B[1]), 
-                 "f"(D[0]),  "f"(D[1]),  "f"(D[2]),  "f"(D[3]),  "f"(D[8]),  "f"(D[9]),  "f"(D[10]),  "f"(D[11])
-            );
-
-            // - -
-            // - *
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(D[4]), "=f"(D[5]), "=f"(D[6]), "=f"(D[7]), "=f"(D[12]), "=f"(D[13]), "=f"(D[14]), "=f"(D[15]) :
-                 "r"(A[2]),  "r"(A[3]), 
-                 "r"(B[2]),  "r"(B[3]), 
-                 "f"(D[4]),  "f"(D[5]),  "f"(D[6]),  "f"(D[7]),  "f"(D[12]),  "f"(D[13]),  "f"(D[14]),  "f"(D[15])
-            );
+            mma_sync_32_32(A, B, C, D);
             
             ptr_a += SHMEM_TILE_SIZE;
             ptr_b += SHMEM_TILE_SIZE;
@@ -206,9 +167,7 @@ void attention_front(
      
     return;
 }
-
 */
-
 
 /* This kernel computes softmax(QK^T / sqrt(attention_dim), axis = 1)
  * First, we compute the product QK^T, then take the softmax
@@ -216,7 +175,7 @@ void attention_front(
  *  Q:  Column major order matrix of queries - dimensions (max_seq_len x attention_dim)
  *  KT: Row major order matrix of transposed keys (i.e. column major ordered keys)  - dimensions (attention_dim x max_seq_len)
  * OUTPUTS:
- *  out: Column major ordered softmax(QK^T, axis = 1)
+ *  out: Column major ordered softmax(QK^T / sqrt(attention_dim), axis = 1)
  *  
  * Things to try later:
  *  - Make each block compute a 64x256 strip of the output matrix, with the intention that max_seq_len is 256.
@@ -227,7 +186,6 @@ void attention_front(
  *      * This kind of design may clog up the math instruction pipeline though, since we concentrate all the
  *        arithmetic on a much smaller number of blocks.
  *  - Try out __shfl__up(down)_sync() instructions
- * How do I want to actually perform the sum reduction for softmax?
  */
 __global__
 void attention_middle(
@@ -297,50 +255,8 @@ void attention_middle(
             *((copy_t *)A) = *((copy_t *)ptr_a);
             *((copy_t *)B) = *((copy_t *)ptr_b);
 
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(C[0]), "=f"(C[1]), "=f"(C[2]), "=f"(C[3]), "=f"(C[8]), "=f"(C[9]), "=f"(C[10]), "=f"(C[11]) :
-                 "r"(A[0]),  "r"(A[1]), 
-                 "r"(B[0]),  "r"(B[1]), 
-                 "f"(C[0]),  "f"(C[1]),  "f"(C[2]),  "f"(C[3]),  "f"(C[8]),  "f"(C[9]),  "f"(C[10]),  "f"(C[11])
-            );
-            
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(C[4]), "=f"(C[5]), "=f"(C[6]), "=f"(C[7]), "=f"(C[12]), "=f"(C[13]), "=f"(C[14]), "=f"(C[15]) :
-                 "r"(A[0]),  "r"(A[1]), 
-                 "r"(B[2]),  "r"(B[3]), 
-                 "f"(C[4]),  "f"(C[5]),  "f"(C[6]),  "f"(C[7]),  "f"(C[12]),  "f"(C[13]),  "f"(C[14]),  "f"(C[15])
-            );
-            
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(D[0]), "=f"(D[1]), "=f"(D[2]), "=f"(D[3]), "=f"(D[8]), "=f"(D[9]), "=f"(D[10]), "=f"(D[11]) :
-                 "r"(A[2]),  "r"(A[3]), 
-                 "r"(B[0]),  "r"(B[1]), 
-                 "f"(D[0]),  "f"(D[1]),  "f"(D[2]),  "f"(D[3]),  "f"(D[8]),  "f"(D[9]),  "f"(D[10]),  "f"(D[11])
-            );
+            mma_sync_32_32(A, B, C, D);
 
-            asm volatile("mma.sync.aligned.m8n8k4.col.row.f32.f16.f16.f32 \n"
-                "{%0, %1, %2, %3, %4, %5, %6, %7},\n\t"
-                "{%8, %9},\n\t"
-                "{%10, %11},\n\t"
-                "{%12, %13, %14, %15, %16, %17, %18, %19};\n" :
-                "=f"(D[4]), "=f"(D[5]), "=f"(D[6]), "=f"(D[7]), "=f"(D[12]), "=f"(D[13]), "=f"(D[14]), "=f"(D[15]) :
-                 "r"(A[2]),  "r"(A[3]), 
-                 "r"(B[2]),  "r"(B[3]), 
-                 "f"(D[4]),  "f"(D[5]),  "f"(D[6]),  "f"(D[7]),  "f"(D[12]),  "f"(D[13]),  "f"(D[14]),  "f"(D[15])
-            );
-            
             ptr_a += SHMEM_TILE_SIZE;
             ptr_b += SHMEM_TILE_SIZE;
         }
@@ -356,9 +272,10 @@ void attention_middle(
     // First compute exponentials of all elements in the registers and sum them.
 
     float c_sum = 0, d_sum = 0;
+    float rsqrt_d = rsqrtf(attention_dim);
 #pragma unroll
     for (int i = 0; i < 32; ++i) {
-        accumulators[i] = expf(accumulators[i]);
+        accumulators[i] = expf(accumulators[i] * rsqrt_d);
         (i < 16 ? c_sum : d_sum) += accumulators[i];
     }
 
@@ -372,9 +289,16 @@ void attention_middle(
     grid.sync();
     
     // Read the result and finish the softmax computation
-    // TODO: Make this a cooperative load
-    float block_c_sum = quad_pair & 1 ? reduce_glmem[row_offset ^ 4] : reduce_glmem[row_offset];
-    float block_d_sum = quad_pair & 1 ? reduce_glmem[row_offset] : reduce_glmem[row_offset ^ 4];
+    if ( wid < 2 ) {
+        shmem_ptr_float[tid] = reduce_glmem[global_row_offset + tid];
+    }
+    __syncthreads();
+
+    float block_c_sum = quad_pair & 1 ? 
+        shmem_ptr_float[(warp_row_offset + lane_row_offset) ^ 4] : shmem_ptr_float[warp_row_offset + lane_row_offset];
+    float block_d_sum = quad_pair & 1 ? 
+        shmem_ptr_float[warp_row_offset + lane_row_offset] : shmem_ptr_float[(warp_row_offset + lane_row_offset) ^ 4];
+
 #pragma unroll
     for (int i = 0; i < 16; ++i) C[i] /= block_c_sum;
 #pragma unroll
@@ -391,9 +315,6 @@ void attention_middle(
     }
     __syncthreads(); // Need to sync here, because now we have a block cooperative load from shmem to glmem
 
-    // At this point in the kernel, the 64x64 block of output is in shmem.  We must compute the reduce sum,
-    // and then send that result to all other blocks somehow.
-    
 #pragma unroll
     for (int i = 0; i < 32; ++i) {
         out[ldo * (global_row_offset + i + warp_row * 32) + global_col_offset + 32 * warp_col + lane] = 

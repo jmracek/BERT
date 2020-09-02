@@ -6,9 +6,9 @@
 #include <type_traits>
 #include <vector>
 
-#include "FeatureVisitor.hpp"
+class FeatureVisitor;
 
-class Feature {
+class Feature: public WorkflowTask {
 protected:
     std::string name;
     std::vector<size_t> shape;
